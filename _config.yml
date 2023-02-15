@@ -3,10 +3,14 @@
 ## Source: https://github.com/hexojs/hexo/
 
 # Site
-title: Hexo
-subtitle: 'Blog'
-description: ''
+title: 知识加油站
+subtitle: 
+description: '分享知识,个人成长'
 keywords:
+- 涂智蔷
+- 个人博客
+- Java
+- Android
 author: 涂智蔷
 language: zh-CN
 timezone: 'Asia/Shanghai'
