@@ -3,6 +3,8 @@ title: SSH基础
 date: 2023-02-04 12:04:40
 tags:
 - 安全
+categories:
+- 安全
 ---
 
 

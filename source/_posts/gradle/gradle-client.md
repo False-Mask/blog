@@ -3,6 +3,8 @@ title: Gradle启动之Client
 date: 2023-02-14 15:00:04
 tags:
 - gradle
+categories:
+- gradle
 ---
 
 
@@ -54,7 +56,7 @@ tags:
 
 > Note:
 >
-> 在gradle源码工程创建，方便到时候直接链接。
+> 在gradle源码工程创建，方便到时候直接连接。
 
 ![image-20230214160307320](https://typora-blog-picture.oss-cn-chengdu.aliyuncs.com/blog/image-20230214160307320.png)
 
@@ -726,11 +728,11 @@ public void execute(ExecutionListener executionListener) {
 >
 >   ```text
 >   #############################################################################
->           
+>               
 >   	WARNING WARNING WARNING WARNING WARNING WARNING WARNING WARNING WARNING
->           
+>               
 >   	Debug level logging will leak security sensitive information
->           
+>               
 >   #############################################################################
 >   ```
 > - `ParseAndBuildAction`

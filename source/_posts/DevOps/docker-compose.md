@@ -3,6 +3,9 @@ title: Docker Compose
 date: 2023-02-06 11:00:58
 tags:
 - devops
+categories:
+- devops
+- docker compose
 ---
 
 

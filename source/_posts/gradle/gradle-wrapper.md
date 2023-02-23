@@ -3,6 +3,8 @@ title: Gradle启动之gradle-wrapper
 date: 2023-02-09 23:19:49
 tags:
 - gradle
+categories:
+- gradle
 ---
 
 
