@@ -1812,7 +1812,135 @@ private fun computeCandidate(): CacheStrategy {
 
 ###### ConnectInterceptor
 
+> 连接拦截器
 
+```kotlin
+object ConnectInterceptor : Interceptor {
+  @Throws(IOException::class)
+  override fun intercept(chain: Interceptor.Chain): Response {
+      // 获取chain
+    val realChain = chain as RealInterceptorChain
+     // 初始化连接
+    val exchange = realChain.call.initExchange(chain)
+     // 将连接接入chain
+    val connectedChain = realChain.copy(exchange = exchange)
+      //  交由后续拦截器操作
+    return connectedChain.proceed(realChain.request)
+  }
+}
+```
+
+
+
+> 初始化连接
+>
+> Finds a new or pooled connection to carry a forthcoming request and response
+>
+> 从连接池中寻找一个可复用的连接，或者是创建一个新的连接
+
+```kotlin
+internal fun initExchange(chain: RealInterceptorChain): Exchange {
+  synchronized(this) {
+    check(expectMoreExchanges) { "released" }
+    check(!responseBodyOpen)
+    check(!requestBodyOpen)
+  }
+
+  val exchangeFinder = this.exchangeFinder!!
+  // 寻找网络编码
+  val codec = exchangeFinder.find(client, chain)
+  // 创建Exchange对象
+  val result = Exchange(this, eventListener, exchangeFinder, codec)
+  this.interceptorScopedExchange = result
+  this.exchange = result
+  synchronized(this) {
+    this.requestBodyOpen = true
+    this.responseBodyOpen = true
+  }
+
+  if (canceled) throw IOException("Canceled")
+  return result
+}
+```
+
+
+
+> 获取网络编码实体
+
+```kotlin
+fun find(
+  client: OkHttpClient,
+  chain: RealInterceptorChain
+): ExchangeCodec {
+  try {
+      // 寻找可用连接
+    val resultConnection = findHealthyConnection(
+        connectTimeout = chain.connectTimeoutMillis,
+        readTimeout = chain.readTimeoutMillis,
+        writeTimeout = chain.writeTimeoutMillis,
+        pingIntervalMillis = client.pingIntervalMillis,
+        connectionRetryEnabled = client.retryOnConnectionFailure,
+        doExtensiveHealthChecks = chain.request.method != "GET"
+    )
+      // 创建网络编码
+    return resultConnection.newCodec(client, chain)
+  } catch (e: RouteException) {
+    trackFailure(e.lastConnectException)
+    throw e
+  } catch (e: IOException) {
+    trackFailure(e)
+    throw RouteException(e)
+  }
+}
+```
+
+
+
+> 建立连接
+
+```kotlin
+private fun findHealthyConnection(
+  connectTimeout: Int,
+  readTimeout: Int,
+  writeTimeout: Int,
+  pingIntervalMillis: Int,
+  connectionRetryEnabled: Boolean,
+  doExtensiveHealthChecks: Boolean
+): RealConnection {
+  while (true) {
+      // 寻找连接
+    val candidate = findConnection(
+        connectTimeout = connectTimeout,
+        readTimeout = readTimeout,
+        writeTimeout = writeTimeout,
+        pingIntervalMillis = pingIntervalMillis,
+        connectionRetryEnabled = connectionRetryEnabled
+    )
+
+      // 如果连接可用，直接返回
+    // Confirm that the connection is good.
+    if (candidate.isHealthy(doExtensiveHealthChecks)) {
+      return candidate
+    }
+	// 如果连接不可用，不允许进一步运行
+    // If it isn't, take it out of the pool.
+    candidate.noNewExchanges()
+
+    // Make sure we have some routes left to try. One example where we may exhaust all the routes
+    // would happen if we made a new connection and it immediately is detected as unhealthy.
+      // 
+    if (nextRouteToTry != null) continue
+
+    val routesLeft = routeSelection?.hasNext() ?: true
+    if (routesLeft) continue
+
+    val routesSelectionLeft = routeSelector?.hasNext() ?: true
+    if (routesSelectionLeft) continue
+
+    throw IOException("exhausted all routes")
+  }
+}
+```
 
 
 
@@ -1820,25 +1948,218 @@ private fun computeCandidate(): CacheStrategy {
 
 
 
+> This is the last interceptor in the chain. It makes a network call to the server.
+>
+> 拦截器链中的最后一个，可以用于向server做网络请求。
+
+```kotlin
+class CallServerInterceptor(private val forWebSocket: Boolean) : Interceptor {
+
+  @Throws(IOException::class)
+  override fun intercept(chain: Interceptor.Chain): Response {
+      // 获取必要参数
+    val realChain = chain as RealInterceptorChain
+    val exchange = realChain.exchange!!
+    val request = realChain.request
+    val requestBody = request.body
+      // request发送时间
+    val sentRequestMillis = System.currentTimeMillis()
+	  // 写入头
+    exchange.writeRequestHeaders(request)
+	
+    var invokeStartEvent = true
+    var responseBuilder: Response.Builder? = null
+        // 如果请求类型支持body，并且body不为null，写入body
+    if (HttpMethod.permitsRequestBody(request.method) && requestBody != null) {
+      // If there's a "Expect: 100-continue" header on the request, wait for a "HTTP/1.1 100
+      // Continue" response before transmitting the request body. If we don't get that, return
+      // what we did get (such as a 4xx response) without ever transmitting the request body.
+      if ("100-continue".equals(request.header("Expect"), ignoreCase = true)) {
+        exchange.flushRequest()
+        responseBuilder = exchange.readResponseHeaders(expectContinue = true)
+        exchange.responseHeadersStart()
+        invokeStartEvent = false
+      }
+        // 写入body
+      if (responseBuilder == null) {
+        if (requestBody.isDuplex()) { // 如果是request是全双工，不关闭body
+          // Prepare a duplex body so that the application can send a request body later.
+          exchange.flushRequest()
+          val bufferedRequestBody = exchange.createRequestBody(request, true).buffer()
+          requestBody.writeTo(bufferedRequestBody)
+        } else { // 不是全双工在发送数据后关闭
+          // Write the request body if the "Expect: 100-continue" expectation was met.
+          val bufferedRequestBody = exchange.createRequestBody(request, false).buffer()
+          requestBody.writeTo(bufferedRequestBody)
+          bufferedRequestBody.close()
+        }
+      } else { 
+        exchange.noRequestBody()
+        if (!exchange.connection.isMultiplexed) {
+          // If the "Expect: 100-continue" expectation wasn't met, prevent the HTTP/1 connection
+          // from being reused. Otherwise we're still obligated to transmit the request body to
+          // leave the connection in a consistent state.
+          exchange.noNewExchangesOnConnection()
+        }
+      }
+    } else { // 无body	
+      exchange.noRequestBody()
+    }
+	// 如果body为null或者不是全双工，请求完成
+    if (requestBody == null || !requestBody.isDuplex()) {
+      exchange.finishRequest()
+    }
+      // 构建response
+    if (responseBuilder == null) {
+        // 读响应头
+      responseBuilder = exchange.readResponseHeaders(expectContinue = false)!!
+      if (invokeStartEvent) { 
+        exchange.responseHeadersStart()
+        invokeStartEvent = false
+      }
+    }
+      // 装入request，握手，发送时间，接受时间。
+    var response = responseBuilder
+        .request(request)
+        .handshake(exchange.connection.handshake())
+        .sentRequestAtMillis(sentRequestMillis)
+        .receivedResponseAtMillis(System.currentTimeMillis())
+        .build()
+      // 读取响应码
+    var code = response.code
+    if (code == 100) {
+      // Server sent a 100-continue even though we did not request one. Try again to read the actual
+      // response status.
+      responseBuilder = exchange.readResponseHeaders(expectContinue = false)!!
+      if (invokeStartEvent) {
+        exchange.responseHeadersStart()
+      }
+        // 重新构建response
+      response = responseBuilder
+          .request(request)
+          .handshake(exchange.connection.handshake())
+          .sentRequestAtMillis(sentRequestMillis)
+          .receivedResponseAtMillis(System.currentTimeMillis())
+          .build()
+      code = response.code
+    }
+
+    exchange.responseHeadersEnd(response)
+	// websocket协议
+    response = if (forWebSocket && code == 101) {
+      // Connection is upgrading, but we need to ensure interceptors see a non-null response body.
+      response.newBuilder()
+          .body(EMPTY_RESPONSE)
+          .build()
+    } else {
+        // 读取body
+      response.newBuilder()
+          .body(exchange.openResponseBody(response))
+          .build()
+    }
+      // 如果有request或者response中有明确声明Connection: close,不再复用连接
+    if ("close".equals(response.request.header("Connection"), ignoreCase = true) ||
+        "close".equals(response.header("Connection"), ignoreCase = true)) {
+      exchange.noNewExchangesOnConnection()
+    }
+      // 请求码表示无body，但实际有
+    if ((code == 204 || code == 205) && response.body?.contentLength() ?: -1L > 0L) {
+      throw ProtocolException(
+          "HTTP $code had non-zero Content-Length: ${response.body?.contentLength()}")
+    }
+      // 返回response
+    return response
+  }
+}
+```
+
 
 
 ##### 普通拦截器
 
+> 属于自定义的拦截器
 
+OkHttpClient.Builder
 
+```kotlin
+inline fun addInterceptor(crossinline block: (chain: Interceptor.Chain) -> Response) =
+    addInterceptor(Interceptor { chain -> block(chain) })
+```
 
+```kotlin
+fun addInterceptor(interceptor: Interceptor) = apply {
+  interceptors += interceptor
+}
+```
 
 
 
 ##### 网络拦截器
 
+> 也是属于自定义的拦截器
+
+OkHttpClient.Builder
+
+```kotlin
+fun addNetworkInterceptor(interceptor: Interceptor) = apply {
+  networkInterceptors += interceptor
+}
+
+@JvmName("-addNetworkInterceptor") // Prefix with '-' to prevent ambiguous overloads from Java.
+inline fun addNetworkInterceptor(crossinline block: (chain: Interceptor.Chain) -> Response) =
+    addNetworkInterceptor(Interceptor { chain -> block(chain) })
+```
 
 
 
+
+
+##### 小结
+
+> 拦截器分为
+>
+> - 内置拦截器
+>
+>   完成基本的网络请求功能
+>
+> - 自定义拦截器
+>
+>   完成网络请求的扩展需求
+>
+> 其中自定义拦截器分为
+>
+> - 普通拦截器
+>
+>   最早一批处理网络请求的拦截器，在所有内置拦截器之前
+>
+> - 网络拦截器
+>
+>   在网络请求发送以前最晚处理的拦截器
+>
+> 区别不是很大，只是拦截器加入时间的不同。
+>
+> ```kotlin
+> val interceptors = mutableListOf<Interceptor>()
+> // 普通拦截器
+> interceptors += client.interceptors
+> // 内置拦截器
+> interceptors += RetryAndFollowUpInterceptor(client)
+> interceptors += BridgeInterceptor(client.cookieJar)
+> interceptors += CacheInterceptor(client.cache)
+> interceptors += ConnectInterceptor
+> if (!forWebSocket) {
+>     // 网络拦截器
+>   interceptors += client.networkInterceptors
+> }
+> // 内置拦截器
+> interceptors += CallServerInterceptor(forWebSocket)
+> ```
 
 
 
 #### Cache
+
+
 
 
 
