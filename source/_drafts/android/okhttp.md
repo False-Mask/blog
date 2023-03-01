@@ -2159,11 +2159,649 @@ inline fun addNetworkInterceptor(crossinline block: (chain: Interceptor.Chain) -
 
 #### Cache
 
+> 默认情况下Cache对象为null
+
+![image-20230227164826341](https://typora-blog-picture.oss-cn-chengdu.aliyuncs.com/blog/image-20230227164826341.png)
+
+
+
+> 回过头来看CacheInterceptor会发现其实没有缓存
+
+> 由于cache为null不会获取到任何缓存
+
+![image-20230227165239908](https://typora-blog-picture.oss-cn-chengdu.aliyuncs.com/blog/image-20230227165239908.png)
+
+
+
+##### 类结构
+
+![image-20230227165526085](https://typora-blog-picture.oss-cn-chengdu.aliyuncs.com/blog/image-20230227165526085.png)
+
+
+
+##### 构造函数
+
+> 指定缓存存放路径，以及大小（字节）
+
+```kotlin
+// 主构造函数为internal，外部无法使用
+constructor(directory: File, maxSize: Long) : this(directory, maxSize, FileSystem.SYSTEM)
+```
+
+
+
+##### 静态工具方法
+
+
+
+> key
+>
+> 根据url获取计算得到key值
+
+```kotlin
+@JvmStatic
+fun key(url: HttpUrl): String = url.toString().encodeUtf8().md5().hex()
+```
+
+
+
+> varyMatches
+>
+> 查看缓存的response的Vary Header是否发生变化
+
+```kotlin
+fun varyMatches(
+  cachedResponse: Response,
+  cachedRequest: Headers,
+  newRequest: Request
+): Boolean {
+    // 获取缓存响应的header参数的Vary头
+  return cachedResponse.headers.varyFields().none { // 对Vary头中指定的header参数进行一一比对
+      // 如果任何一个不等就返回false
+    cachedRequest.values(it) != newRequest.headers(it)
+  }
+}
+```
+
+
+
+##### 成员变量
+
+
+
+```kotlin
+// 存储数据的类
+internal val cache = DiskLruCache(
+      fileSystem = fileSystem,
+      directory = directory,
+      appVersion = VERSION,
+      valueCount = ENTRY_COUNT,
+      maxSize = maxSize,
+      taskRunner = TaskRunner.INSTANCE
+  )
+
+
+// 用于数据统计
+// 写入成功次数
+internal var writeSuccessCount = 0
+// 写入失败次数
+internal var writeAbortCount = 0
+// 网络请求次数
+private var networkCount = 0
+// 缓存命中次数
+private var hitCount = 0
+// 请求次数
+private var requestCount = 0
+```
+
+
+
+
+
+##### 成员方法
+
+
+
+> get
+>
+> 从cache中获取response
+
+```kotlin
+internal fun get(request: Request): Response? {
+    // 根据url获取key
+  val key = key(request.url)
+    // 获取快照
+  val snapshot: DiskLruCache.Snapshot = try {
+    cache[key] ?: return null
+  } catch (_: IOException) {
+    return null // Give up because the cache cannot be read.
+  }
+	// 获取文件
+  val entry: Entry = try {
+    Entry(snapshot.getSource(ENTRY_METADATA))
+  } catch (_: IOException) {
+    snapshot.closeQuietly()
+    return null
+  }
+
+  val response = entry.response(snapshot)
+  if (!entry.matches(request, response)) {
+    response.body?.closeQuietly()
+    return null
+  }
+
+  return response
+}
+```
+
+
+
+> Entry
+
+```kotlin
+@Throws(IOException::class) constructor(rawSource: Source) {
+  rawSource.use {
+    val source = rawSource.buffer()
+      // 读取url
+    val urlLine = source.readUtf8LineStrict()
+    // Choice here is between failing with a correct RuntimeException
+    // or mostly silently with an IOException
+    url = urlLine.toHttpUrlOrNull() ?: throw IOException("Cache corruption for $urlLine").also {
+      Platform.get().log("cache corruption", Platform.WARN, it)
+    }
+      // 读取方法
+    requestMethod = source.readUtf8LineStrict()
+    val varyHeadersBuilder = Headers.Builder()
+      // 读取请求vary header个数
+    val varyRequestHeaderLineCount = readInt(source)
+      // 添加vary header
+    for (i in 0 until varyRequestHeaderLineCount) {
+      varyHeadersBuilder.addLenient(source.readUtf8LineStrict())
+    }
+    varyHeaders = varyHeadersBuilder.build()
+		// 读取状态行
+    val statusLine = StatusLine.parse(source.readUtf8LineStrict())
+    protocol = statusLine.protocol
+    code = statusLine.code
+    message = statusLine.message
+    val responseHeadersBuilder = Headers.Builder()
+      // 读取状态行个数
+    val responseHeaderLineCount = readInt(source)
+    for (i in 0 until responseHeaderLineCount) {
+      responseHeadersBuilder.addLenient(source.readUtf8LineStrict())
+    }
+      // 发送时间
+    val sendRequestMillisString = responseHeadersBuilder[SENT_MILLIS]
+      // 接受时间
+    val receivedResponseMillisString = responseHeadersBuilder[RECEIVED_MILLIS]
+    responseHeadersBuilder.removeAll(SENT_MILLIS)
+    responseHeadersBuilder.removeAll(RECEIVED_MILLIS)
+    sentRequestMillis = sendRequestMillisString?.toLong() ?: 0L
+    receivedResponseMillis = receivedResponseMillisString?.toLong() ?: 0L
+    responseHeaders = responseHeadersBuilder.build()
+
+    if (isHttps) {
+      val blank = source.readUtf8LineStrict() // 空白
+      if (blank.isNotEmpty()) {
+        throw IOException("expected \"\" but was \"$blank\"")
+      }
+        // 加密套件类型
+      val cipherSuiteString = source.readUtf8LineStrict()
+      val cipherSuite = CipherSuite.forJavaName(cipherSuiteString)
+        // 服务端证书
+      val peerCertificates = readCertificateList(source)
+        // 本地证书
+      val localCertificates = readCertificateList(source)
+      val tlsVersion = if (!source.exhausted()) {
+        TlsVersion.forJavaName(source.readUtf8LineStrict()) // 读取tls版本号
+      } else {
+        TlsVersion.SSL_3_0
+      }
+      handshake = Handshake.get(tlsVersion, cipherSuite, peerCertificates, localCertificates)
+    } else {
+      handshake = null
+    }
+  }
+}
+```
+
+
+
+![image-20230227183310336](https://typora-blog-picture.oss-cn-chengdu.aliyuncs.com/blog/image-20230227183310336.png)
+
+
+
+
+
+
+
+> 向cache中存入内容
+
+> - 只写入了header
+> - 返回了一个可以用于写入body的输出流（也不完全是输出流，可以看成是输出流）
+
+> 所以body的写入需要借助外界通过向这个put返回的输出流里面写东西才行
+
+```kotlin
+internal fun put(response: Response): CacheRequest? {
+    // 获取method
+  val requestMethod = response.request.method
+	// 判断是否需要刷新缓存
+  if (HttpMethod.invalidatesCache(response.request.method)) {
+    try {
+      remove(response.request)
+    } catch (_: IOException) {
+      // The cache cannot be written.
+    }
+    return null
+  }
+	// 只允许缓存get请求
+  if (requestMethod != "GET") {
+    // Don't cache non-GET responses. We're technically allowed to cache HEAD requests and some
+    // POST requests, but the complexity of doing so is high and the benefit is low.
+    return null
+  }
+	// 如果header有Vary: *，拒绝缓存
+  if (response.hasVaryAll()) {
+    return null
+  }
+	// 创建一个Entry
+    // 注意Entry之解析了response中的header
+  val entry = Entry(response)
+  var editor: DiskLruCache.Editor? = null
+  try {
+      // 获取一个cache修改器
+    editor = cache.edit(key(response.request.url)) ?: return null
+      // 写入entry（也就是header）
+    entry.writeTo(editor)
+      // 返回一个CacheRequest（可以理解body的输出流）
+      // 注意前面的writeTo只写入了header，到目前为止body是没有写入的
+    return RealCacheRequest(editor)
+  } catch (_: IOException) {
+    abortQuietly(editor)
+    return null
+  }
+}
+```
+
+
+
+
+
+> 写入body
+
+> `CacheInterceptor.intercept`
+
+```java
+override fun intercept(chain: Interceptor.Chain): Response {
+
+    // ......
+    
+    if (cache != null) {
+      if (response.promisesBody() && CacheStrategy.isCacheable(response, networkRequest)) {
+        // Offer this request to the cache.
+          // 存入缓存
+        val cacheRequest = cache.put(response)
+            // 返回响应体
+        return cacheWritingResponse(cacheRequest, response).also {
+          if (cacheResponse != null) {
+            // This will log a conditional cache miss only.
+            listener.cacheMiss(call)
+          }
+        }
+      }
+
+      if (HttpMethod.invalidatesCache(networkRequest.method)) {
+        try {
+          cache.remove(networkRequest)
+        } catch (_: IOException) {
+          // The cache cannot be written.
+        }
+      }
+    }
+
+    return response
+  }
+```
+
+> 查看源码后可以发现Cache body的缓存是在Reponse读取的时候一并操作的，当用户读取Reponse的同时还会向缓存写入。
+
+```kotlin
+private fun cacheWritingResponse(cacheRequest: CacheRequest?, response: Response): Response {
+  // Some apps return a null body; for compatibility we treat that like a null cache request.
+  if (cacheRequest == null) return response
+    // 获取cache Sink
+  val cacheBodyUnbuffered = cacheRequest.body()
+	// 获取网络请求reponse source
+  val source = response.body!!.source()
+    // cache sink加buffer，减少与磁盘交互次数
+  val cacheBody = cacheBodyUnbuffered.buffer()
+	// 返回给用户的response的body的source
+  val cacheWritingSource = object : Source {
+    private var cacheRequestClosed = false
+
+    @Throws(IOException::class)
+    override fun read(sink: Buffer, byteCount: Long): Long {
+      val bytesRead: Long
+      try {
+          // 很正常的读取操作
+          // 读取网络请求的response
+        bytesRead = source.read(sink, byteCount)
+      } catch (e: IOException) {
+        if (!cacheRequestClosed) {
+          cacheRequestClosed = true
+          cacheRequest.abort() // Failed to write a complete cache response.
+        }
+        throw e
+      }
+
+      if (bytesRead == -1L) { // 读取完毕
+        if (!cacheRequestClosed) {
+          cacheRequestClosed = true
+            // 关闭cache的sink
+          cacheBody.close() // The cache response is complete!
+        }
+        return -1
+      }
+		// 将读取的内容写入缓存。
+      sink.copyTo(cacheBody.buffer, sink.size - bytesRead, bytesRead)
+      cacheBody.emitCompleteSegments()
+      return bytesRead
+    }
+
+    override fun timeout() = source.timeout()
+
+    @Throws(IOException::class)
+    override fun close() {
+      if (!cacheRequestClosed &&
+          !discard(ExchangeCodec.DISCARD_STREAM_TIMEOUT_MILLIS, MILLISECONDS)) {
+        cacheRequestClosed = true
+        cacheRequest.abort()
+      }
+      source.close()
+    }
+  }
+
+  val contentType = response.header("Content-Type")
+  val contentLength = response.body.contentLength()
+  return response.newBuilder()
+      .body(RealResponseBody(contentType, contentLength, cacheWritingSource.buffer()))
+      .build()
+}
+```
+
+
+
+
+
+> remove
+
+```kotlin
+@Throws(IOException::class)
+internal fun remove(request: Request) {
+  cache.remove(key(request.url))
+}
+```
+
+
+
+> initialize
+
+```kotlin
+fun initialize() {
+  cache.initialize()
+}
+```
+
+
+
+
+
+> 关闭缓存并删除所有存储的内容，值得注意的是他会删除缓存文件夹下的所有的文件，即使是不归缓存管的文件。
+
+```kotlin
+fun delete() {
+  cache.delete()
+}
+```
+
+
+
+> 删除缓存中的所有值，但是正在写入的内容会正常结束，但是不会存入缓存中
+
+```kotlin
+fun evictAll() {
+  cache.evictAll()
+}
+```
+
+
+
+> 返回缓存中的所有的url值
+
+```kotlin
+fun urls(): MutableIterator<String> {
+  return object : MutableIterator<String> {
+    private val delegate: MutableIterator<DiskLruCache.Snapshot> = cache.snapshots()
+    private var nextUrl: String? = null
+    private var canRemove = false
+
+    override fun hasNext(): Boolean {
+      if (nextUrl != null) return true
+
+      canRemove = false // Prevent delegate.remove() on the wrong item!
+      while (delegate.hasNext()) {
+        try {
+          delegate.next().use { snapshot ->
+            val metadata = snapshot.getSource(ENTRY_METADATA).buffer()
+            nextUrl = metadata.readUtf8LineStrict()
+            return true
+          }
+        } catch (_: IOException) {
+          // We couldn't read the metadata for this snapshot; possibly because the host filesystem
+          // has disappeared! Skip it.
+        }
+      }
+
+      return false
+    }
+
+    override fun next(): String {
+      if (!hasNext()) throw NoSuchElementException()
+      val result = nextUrl!!
+      nextUrl = null
+      canRemove = true
+      return result
+    }
+
+    override fun remove() {
+      check(canRemove) { "remove() before next()" }
+      delegate.remove()
+    }
+  }
+}
+```
+
+
+
+> 数据统计
+
+```kotlin
+@Synchronized fun writeAbortCount(): Int = writeAbortCount
+
+@Synchronized fun writeSuccessCount(): Int = writeSuccessCount
+
+@Throws(IOException::class)
+fun size(): Long = cache.size()
+
+/** Max size of the cache (in bytes). */
+fun maxSize(): Long = cache.maxSize
+```
+
+
+
+> 刷新缓存
+
+```kotlin
+@Throws(IOException::class)
+override fun flush() {
+  cache.flush()
+}
+```
+
+
+
+> 关闭
+
+```kotlin
+@Throws(IOException::class)
+override fun close() {
+  cache.close()
+}
+```
+
+
+
+##### 小结
+
+
+
+- `Cache`大多数的成员都是internal，无法访问，外部能做的要么是获取缓存的统计数据，或者删除缓存等操作，缓存的处理`CacheInterceptor`包揽。
+
+- `Cache`的包含两部分，一为journal文件即缓存的控制文件，二为Response缓存
+
+  - journal文件包含了缓存的内容（也就是缓存的变动历史）
+  - Response缓存是以`url`的hash值作为文件名称，并将Response的内容拆分成了两部分，XXX.0与XXX.1文件。其中.0文件是Respone的header，.1文件为Response的body。
+
+- 缓存文件的存入过程如下，先生产XXX.0.tmp，和XXX.1.tmp文件，.0.tmp文件是在put的时候立即生成的，.1.tmp文件是在网络Response读取的时候写入的。由于.1.tmp在.0.tmp之后写入完成。在.1.tmp写入完成以后才会把.0.tmp以及.1.tmp文件命名为.0，.1文件，这样做是为了确保缓存放入的原子性。（防止内容写入一半）
+
+  ```kotlin
+  // 在调用string以后response body不仅会被read，背后可能还会将reponse的body存入缓存中。
+  okhttpClient.newCall(
+      Request.Builder()
+          .get()
+          .url("your url")
+          .build()
+  ).execute().body?.string()
+  ```
+
 
 
 
 
 #### Authenticator
+
+> 对身份鉴别过程进行处理
+
+`RetryAndFollowUpInterceptor`
+
+> followUpRequest方法会返回一个重尝试的Request
+
+```kotlin
+private fun followUpRequest(userResponse: Response, exchange: Exchange?): Request? {
+  val route = exchange?.connection?.route()
+  val responseCode = userResponse.code
+		// ......
+  val method = userResponse.request.method
+  when (responseCode) {
+      // http代理鉴别
+    HTTP_PROXY_AUTH -> {
+      val selectedProxy = route!!.proxy
+      if (selectedProxy.type() != Proxy.Type.HTTP) {
+        throw ProtocolException("Received HTTP_PROXY_AUTH (407) code while not using proxy")
+      }
+      return client.proxyAuthenticator.authenticate(route, userResponse)
+    }
+		// http鉴别
+    HTTP_UNAUTHORIZED -> return client.authenticator.authenticate(route, userResponse)
+		// ......
+    else -> return null
+  }
+}
+```
+
+
+
+
+
+```kotlin
+fun interface Authenticator {
+  /**
+   * Returns a request that includes a credential to satisfy an authentication challenge in
+   * [response]. Returns null if the challenge cannot be satisfied.
+   *
+   * The route is best effort, it currently may not always be provided even when logically
+   * available. It may also not be provided when an authenticator is re-used manually in an
+   * application interceptor, such as when implementing client-specific retries.
+   */
+    // 
+  @Throws(IOException::class)
+  fun authenticate(route: Route?, response: Response): Request?
+
+  companion object {
+    /** An authenticator that knows no credentials and makes no attempt to authenticate. */
+      // 一个什么都不做的鉴别器
+    @JvmField
+    val NONE: Authenticator = AuthenticatorNone()
+    private class AuthenticatorNone : Authenticator {
+      override fun authenticate(route: Route?, response: Response): Request? = null
+    }
+
+    /** An authenticator that uses the java.net.Authenticator global authenticator. */
+      // 基于密码的身份鉴别器
+    @JvmField
+    val JAVA_NET_AUTHENTICATOR: Authenticator = JavaNetAuthenticator()
+  }
+}
+```
+
+
+
+> 设置鉴别器
+
+```kotlin
+fun authenticator(authenticator: Authenticator) = apply {
+  this.authenticator = authenticator
+}
+```
+
+```kotlin
+fun proxyAuthenticator(proxyAuthenticator: Authenticator) = apply {
+  if (proxyAuthenticator != this.proxyAuthenticator) {
+    this.routeDatabase = null
+  }
+
+  this.proxyAuthenticator = proxyAuthenticator
+}
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
