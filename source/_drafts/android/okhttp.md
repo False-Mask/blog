@@ -1820,7 +1820,7 @@ object ConnectInterceptor : Interceptor {
   override fun intercept(chain: Interceptor.Chain): Response {
       // 获取chain
     val realChain = chain as RealInterceptorChain
-     // 初始化连接
+     // 初始化Exchange
     val exchange = realChain.call.initExchange(chain)
      // 将连接接入chain
     val connectedChain = realChain.copy(exchange = exchange)
@@ -1896,7 +1896,7 @@ fun find(
 
 
 
-> 建立连接
+> 寻找连接
 
 ```kotlin
 private fun findHealthyConnection(
@@ -1928,9 +1928,9 @@ private fun findHealthyConnection(
 
     // Make sure we have some routes left to try. One example where we may exhaust all the routes
     // would happen if we made a new connection and it immediately is detected as unhealthy.
-      // 
+      // 如果连接不可用，还有尝试的连接，继续寻找
     if (nextRouteToTry != null) continue
-
+		// 如果还存在路由项继续
     val routesLeft = routeSelection?.hasNext() ?: true
     if (routesLeft) continue
 
@@ -1939,6 +1939,135 @@ private fun findHealthyConnection(
 
     throw IOException("exhausted all routes")
   }
+}
+```
+
+
+
+> 连接search核心逻辑
+
+```kotlin
+private fun findConnection(
+  connectTimeout: Int,
+  readTimeout: Int,
+  writeTimeout: Int,
+  pingIntervalMillis: Int,
+  connectionRetryEnabled: Boolean
+): RealConnection {
+    // 确保call是有效的
+  if (call.isCanceled()) throw IOException("Canceled")
+
+  // Attempt to reuse the connection from the call.
+  val callConnection = call.connection // This may be mutated by releaseConnectionNoEvents()!
+    // 尝试复用连接
+  if (callConnection != null) {
+    var toClose: Socket? = null
+    synchronized(callConnection) {
+      if (callConnection.noNewExchanges || !sameHostAndPort(callConnection.route().address.url)) {
+        toClose = call.releaseConnectionNoEvents()
+      }
+    }
+	
+    // If the call's connection wasn't released, reuse it. We don't call connectionAcquired() here
+    // because we already acquired it.
+    if (call.connection != null) {
+      check(toClose == null)
+      return callConnection
+    }
+
+    // The call's connection was released.
+    toClose?.closeQuietly()
+    eventListener.connectionReleased(call, callConnection)
+  }
+
+  // We need a new connection. Give it fresh stats.
+  refusedStreamCount = 0
+  connectionShutdownCount = 0
+  otherFailureCount = 0
+	// 尝试从连接池中获取
+  // Attempt to get a connection from the pool.
+  if (connectionPool.callAcquirePooledConnection(address, call, null, false)) {
+    val result = call.connection!!
+    eventListener.connectionAcquired(call, result)
+    return result
+  }
+
+  // Nothing in the pool. Figure out what route we'll try next.
+  val routes: List<Route>?
+  val route: Route
+    // 从其他路由项中寻找
+  if (nextRouteToTry != null) {
+    // Use a route from a preceding coalesced connection.
+    routes = null
+    route = nextRouteToTry!!
+    nextRouteToTry = null
+  } else if (routeSelection != null && routeSelection!!.hasNext()) {
+    // Use a route from an existing route selection.
+    routes = null
+    route = routeSelection!!.next()
+  } else {
+    // Compute a new route selection. This is a blocking operation!
+    var localRouteSelector = routeSelector
+    if (localRouteSelector == null) {
+      localRouteSelector = RouteSelector(address, call.client.routeDatabase, call, eventListener)
+      this.routeSelector = localRouteSelector
+    }
+    val localRouteSelection = localRouteSelector.next()
+    routeSelection = localRouteSelection
+    routes = localRouteSelection.routes
+
+    if (call.isCanceled()) throw IOException("Canceled")
+
+    // Now that we have a set of IP addresses, make another attempt at getting a connection from
+    // the pool. We have a better chance of matching thanks to connection coalescing.
+      // 加入路由进行连接的复用
+    if (connectionPool.callAcquirePooledConnection(address, call, routes, false)) {
+      val result = call.connection!!
+      eventListener.connectionAcquired(call, result)
+      return result
+    }
+
+    route = localRouteSelection.next()
+  }
+	// 创建连接
+  // Connect. Tell the call about the connecting call so async cancels work.
+    // 创建新的连接
+  val newConnection = RealConnection(connectionPool, route)
+  call.connectionToCancel = newConnection
+  try {
+    newConnection.connect(
+        connectTimeout,
+        readTimeout,
+        writeTimeout,
+        pingIntervalMillis,
+        connectionRetryEnabled,
+        call,
+        eventListener
+    )
+  } finally {
+    call.connectionToCancel = null
+  }
+  call.client.routeDatabase.connected(newConnection.route())
+
+  // If we raced another call connecting to this host, coalesce the connections. This makes for 3
+  // different lookups in the connection pool!
+    // 获取多路复用的连接即http/2连接。
+  if (connectionPool.callAcquirePooledConnection(address, call, routes, true)) {
+      // 获取到了就放弃创建的连接
+    val result = call.connection!!
+    nextRouteToTry = route
+    newConnection.socket().closeQuietly()
+    eventListener.connectionAcquired(call, result)
+    return result
+  }
+	// 将新创建的连接放入连接池
+  synchronized(newConnection) {
+    connectionPool.put(newConnection)
+    call.acquireConnectionNoEvents(newConnection)
+  }
+
+  eventListener.connectionAcquired(call, newConnection)
+  return newConnection
 }
 ```
 
@@ -2695,7 +2824,7 @@ override fun close() {
 
 `RetryAndFollowUpInterceptor`
 
-> followUpRequest方法会返回一个重尝试的Request
+> followUpRequest方法会返回一个重尝试的Request，而就在这个时候会使用到Authenticator
 
 ```kotlin
 private fun followUpRequest(userResponse: Response, exchange: Exchange?): Request? {
@@ -2722,7 +2851,7 @@ private fun followUpRequest(userResponse: Response, exchange: Exchange?): Reques
 
 
 
-
+> Authenticator接口
 
 ```kotlin
 fun interface Authenticator {
@@ -2777,36 +2906,6 @@ fun proxyAuthenticator(proxyAuthenticator: Authenticator) = apply {
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 #### timeout
 
 
@@ -2814,6 +2913,462 @@ fun proxyAuthenticator(proxyAuthenticator: Authenticator) = apply {
 
 
 #### ConnectionPool
+
+> okhttp的连接池，内部管理了所有的http连接，连接管理都是这个类完成的。
+
+
+
+> Manages reuse of HTTP and HTTP/2 connections for reduced network latency. HTTP requests that share the same Address may share a Connection. This class implements the policy of which connections to keep open for future use.
+>
+> 管理复用http和http/2的连接以减少网络传输的时间，http的请求如果使用了相同的`Address`则可能会共享一个`Connection`，此类实现了将开放的连接保存以备后续之需
+
+```kotlin
+class ConnectionPool internal constructor(
+  internal val delegate: RealConnectionPool
+)
+```
+
+
+
+##### 类结构
+
+> 三个构造函数，一个成员变量，3个成员方法
+
+![image-20230303110235780](https://typora-blog-picture.oss-cn-chengdu.aliyuncs.com/blog/image-20230303110235780.png)
+
+
+
+> 构造函数
+
+```kotlin
+// 主构造
+class ConnectionPool internal constructor(
+  internal val delegate: RealConnectionPool
+)
+
+//从构造
+constructor(
+    maxIdleConnections: Int,
+    keepAliveDuration: Long,
+    timeUnit: TimeUnit
+  ) : this(RealConnectionPool(
+      taskRunner = TaskRunner.INSTANCE,
+      maxIdleConnections = maxIdleConnections,
+      keepAliveDuration = keepAliveDuration,
+      timeUnit = timeUnit
+  ))
+
+ constructor() : this(5, 5, TimeUnit.MINUTES)
+```
+
+> 成员方法
+
+> 肉眼可见的都是委托的代理类
+
+```kotlin
+// 获取池子里闲置的连接数
+fun idleConnectionCount(): Int = delegate.idleConnectionCount()
+
+// 获取连接池的连接总数
+fun connectionCount(): Int = delegate.connectionCount()
+
+// 关闭移除所有的空闲连接
+fun evictAll() {
+  delegate.evictAll()
+}
+```
+
+
+
+##### RealConnectionPool
+
+> 类结构
+
+> 一个构造构造函数，5个成员变量，8个成员函数
+
+![image-20230303111213005](https://typora-blog-picture.oss-cn-chengdu.aliyuncs.com/blog/image-20230303111213005.png)
+
+
+
+> 成员变量
+
+```kotlin
+class RealConnectionPool(
+  taskRunner: TaskRunner,
+  // 最大空闲连接数
+  private val maxIdleConnections: Int,
+  keepAliveDuration: Long,
+  timeUnit: TimeUnit
+) {
+  // 存活的最长nanoSecond时间
+  private val keepAliveDurationNs: Long = timeUnit.toNanos(keepAliveDuration)
+  // 用于存放cleaner请求的队列
+  private val cleanupQueue: TaskQueue = taskRunner.newQueue()
+  // cleaner
+  private val cleanupTask = object : Task("$okHttpName ConnectionPool") {
+    override fun runOnce() = cleanup(System.nanoTime())
+  }
+    
+  // 所有连接
+  private val connections = ConcurrentLinkedQueue<RealConnection>()
+    
+}
+```
+
+
+
+> 成员方法
+
+```kotlin
+// 以下三个是为ConnectionPool实现的
+// connection的calls非空表明此connection处于active状态
+fun idleConnectionCount(): Int {
+  return connections.count {
+    synchronized(it) { it.calls.isEmpty() }
+  }
+}
+// connections是存放connection的容器，所有的connection存放在这里
+fun connectionCount(): Int {
+  return connections.size
+}
+// 关闭所有的空闲连接
+fun evictAll() {
+    val i = connections.iterator()
+    while (i.hasNext()) {
+      val connection = i.next()
+      val socketToClose = synchronized(connection) {
+          // 如果是空闲连接
+        if (connection.calls.isEmpty()) {
+            // 移除
+          i.remove()
+            // 设置该连接为不可使用
+          connection.noNewExchanges = true
+            // 获取socket
+          return@synchronized connection.socket()
+        } else {
+          return@synchronized null
+        }
+      }
+        // 关闭socket
+      socketToClose?.closeQuietly()
+    }
+	// 如果connections空了，没执行任何clean操作，直接取消所有的cleaner
+    if (connections.isEmpty()) cleanupQueue.cancelAll()
+  }
+
+
+// 存放入连接
+  fun put(connection: RealConnection) {
+    	// 查看调用的线程是否持有connection的对象锁，保证线程安全
+      connection.assertThreadHoldsLock()
+	// 添加connection到线程池
+    connections.add(connection)
+      // 为线程池规划一次清除任务
+    cleanupQueue.schedule(cleanupTask)
+  }
+
+```
+
+> 尝试获取一个连接
+
+```kotlin
+fun callAcquirePooledConnection(
+    address: Address,
+    call: RealCall,
+    routes: List<Route>?,
+    requireMultiplexed: Boolean
+  ): Boolean {
+    // 遍历所有连接
+    for (connection in connections) {
+      synchronized(connection) {
+          // 如果需要http/2连接，connection必须要满足多路复用
+        if (requireMultiplexed && !connection.isMultiplexed) return@synchronized
+          // 查看连接是否是可以复用的
+        if (!connection.isEligible(address, routes)) return@synchronized
+          // 获取连接成功，并不发送任何的事件通知（eventListener）
+        call.acquireConnectionNoEvents(connection)
+        return true
+      }
+    }
+    // 所有连接的遍历完了，没有发现符合要求的。
+    return false
+  }
+```
+
+> Notify this pool that connection has become idle. Returns true if the connection has been removed from the pool and should be closed.
+>
+> 提示连接池当前连接已经处于空闲状态，返回true表示connection已从连接池中移除，应该关闭当前连接
+
+```kotlin
+fun connectionBecameIdle(connection: RealConnection): Boolean {
+  connection.assertThreadHoldsLock()
+	// 如果显式声明连接关闭或者连接池的最大空闲数目为0 -> 移除连接
+  return if (connection.noNewExchanges || maxIdleConnections == 0) {
+    connection.noNewExchanges = true
+    connections.remove(connection)
+    if (connections.isEmpty()) cleanupQueue.cancelAll()
+    true
+  } else {
+      // 告知连接池进行清理等操作。
+    cleanupQueue.schedule(cleanupTask)
+    false
+  }
+}
+```
+
+> 清理连接
+
+```kotlin
+fun cleanup(now: Long): Long {
+  var inUseConnectionCount = 0
+  var idleConnectionCount = 0
+  var longestIdleConnection: RealConnection? = null
+  var longestIdleDurationNs = Long.MIN_VALUE
+
+  // Find either a connection to evict, or the time that the next eviction is due.
+  for (connection in connections) {
+    synchronized(connection) {
+      // If the connection is in use, keep searching.
+        // 获取此连接的call个数，以及空闲时间
+      if (pruneAndGetAllocationCount(connection, now) > 0) {
+        inUseConnectionCount++ // 累计正在使用的连接数
+      } else {
+        idleConnectionCount++ // 累计空闲连接数
+
+        // If the connection is ready to be evicted, we're done.
+        // 计算空闲时间段
+        val idleDurationNs = now - connection.idleAtNs
+        // 计算空闲的最大时间段
+        if (idleDurationNs > longestIdleDurationNs) {
+          longestIdleDurationNs = idleDurationNs
+          longestIdleConnection = connection
+        } else {
+          Unit
+        }
+      }
+    }
+  }
+
+  when {
+      // 如果空闲的最大时间段大于目前设置的连接存活时间，或者空闲连接数超出最大值
+      // 立即开启调度
+    longestIdleDurationNs >= this.keepAliveDurationNs
+        || idleConnectionCount > this.maxIdleConnections -> {
+      // We've chosen a connection to evict. Confirm it's still okay to be evict, then close it.
+      val connection = longestIdleConnection!!
+      synchronized(connection) {
+          // 如果当前连接不再空闲亦或不再是空闲最久的连接
+        if (connection.calls.isNotEmpty()) return 0L // No longer idle.
+        if (connection.idleAtNs + longestIdleDurationNs != now) return 0L // No longer oldest.
+          // 如果是空闲连接，并且还是空闲最久的连接，从连接池中释放该连接
+        connection.noNewExchanges = true
+        connections.remove(longestIdleConnection)
+      }
+		// 关闭socket
+      connection.socket().closeQuietly()
+      if (connections.isEmpty()) cleanupQueue.cancelAll()
+
+      // Clean up again immediately.
+      return 0L
+    }
+		// 如果有空闲连接
+    idleConnectionCount > 0 -> {
+      // A connection will be ready to evict soon.
+        // 计算下一次调度时间=存活时间-最长空闲时间段
+      return keepAliveDurationNs - longestIdleDurationNs
+    }
+	 // 如果有存活连接
+    inUseConnectionCount > 0 -> {
+      // All connections are in use. It'll be at least the keep alive duration 'til we run
+      // again.
+        // 没有空闲连接，下次调度只能等最大生存时间
+      return keepAliveDurationNs
+    }
+	// 没有连接，不需要调度
+    else -> {
+      // No connections, idle or in use.
+      return -1
+    }
+  }
+}
+```
+
+
+
+
+
+##### 连接创建
+
+`ExchangeFinder.kt`
+
+```kotlin
+// Connect. Tell the call about the connecting call so async cancels work.
+val newConnection = RealConnection(connectionPool, route)
+call.connectionToCancel = newConnection
+try {
+  newConnection.connect(
+      connectTimeout,
+      readTimeout,
+      writeTimeout,
+      pingIntervalMillis,
+      connectionRetryEnabled,
+      call,
+      eventListener
+  )
+} finally {
+  call.connectionToCancel = null
+}
+```
+
+> 连接
+
+```kotlin
+fun connect(
+  connectTimeout: Int,
+  readTimeout: Int,
+  writeTimeout: Int,
+  pingIntervalMillis: Int,
+  connectionRetryEnabled: Boolean,
+  call: Call,
+  eventListener: EventListener
+) {
+  check(protocol == null) { "already connected" }
+
+  var routeException: RouteException? = null
+  val connectionSpecs = route.address.connectionSpecs
+  val connectionSpecSelector = ConnectionSpecSelector(connectionSpecs)
+
+  if (route.address.sslSocketFactory == null) {
+    if (ConnectionSpec.CLEARTEXT !in connectionSpecs) {
+      throw RouteException(UnknownServiceException(
+          "CLEARTEXT communication not enabled for client"))
+    }
+    val host = route.address.url.host
+    if (!Platform.get().isCleartextTrafficPermitted(host)) {
+      throw RouteException(UnknownServiceException(
+          "CLEARTEXT communication to $host not permitted by network security policy"))
+    }
+  } else {
+    if (Protocol.H2_PRIOR_KNOWLEDGE in route.address.protocols) {
+      throw RouteException(UnknownServiceException(
+          "H2_PRIOR_KNOWLEDGE cannot be used with HTTPS"))
+    }
+  }
+
+  while (true) {
+    try {
+        // tunnel即使用http对https进行代理
+      if (route.requiresTunnel()) {
+        connectTunnel(connectTimeout, readTimeout, writeTimeout, call, eventListener)
+        if (rawSocket == null) {
+          // We were unable to connect the tunnel but properly closed down our resources.
+          break
+        }
+      } else {
+          // 连接到socket
+          // new Socket() -> connect
+        connectSocket(connectTimeout, readTimeout, call, eventListener)
+      }
+        // 根据协议类型建立连接
+        // ssl握手，http/1.1 http/2
+      establishProtocol(connectionSpecSelector, pingIntervalMillis, call, eventListener)
+      eventListener.connectEnd(call, route.socketAddress, route.proxy, protocol)
+      break
+    } catch (e: IOException) {
+      socket?.closeQuietly()
+      rawSocket?.closeQuietly()
+      socket = null
+      rawSocket = null
+      source = null
+      sink = null
+      handshake = null
+      protocol = null
+      http2Connection = null
+      allocationLimit = 1
+
+      eventListener.connectFailed(call, route.socketAddress, route.proxy, null, e)
+
+      if (routeException == null) {
+        routeException = RouteException(e)
+      } else {
+        routeException.addConnectException(e)
+      }
+
+      if (!connectionRetryEnabled || !connectionSpecSelector.connectionFailed(e)) {
+        throw routeException
+      }
+    }
+  }
+
+  if (route.requiresTunnel() && rawSocket == null) {
+    throw RouteException(ProtocolException(
+        "Too many tunnel connections attempted: $MAX_TUNNEL_ATTEMPTS"))
+  }
+
+  idleAtNs = System.nanoTime()
+}
+```
+
+
+
+> Socket建立
+
+```kotlin
+private fun connectSocket(
+  connectTimeout: Int,
+  readTimeout: Int,
+  call: Call,
+  eventListener: EventListener
+) {
+  val proxy = route.proxy
+  val address = route.address
+	// 创建Socket
+  val rawSocket = when (proxy.type()) {
+    Proxy.Type.DIRECT, Proxy.Type.HTTP -> address.socketFactory.createSocket()!!
+    else -> Socket(proxy)
+  }
+  this.rawSocket = rawSocket
+
+  eventListener.connectStart(call, route.socketAddress, proxy)
+  rawSocket.soTimeout = readTimeout
+  try {
+      // 连接
+      // 即 socket.connect(address, connectTimeout)
+    Platform.get().connectSocket(rawSocket, route.socketAddress, connectTimeout)
+  } catch (e: ConnectException) {
+    throw ConnectException("Failed to connect to ${route.socketAddress}").apply {
+      initCause(e)
+    }
+  }
+
+  // The following try/catch block is a pseudo hacky way to get around a crash on Android 7.0
+  // More details:
+  // https://github.com/square/okhttp/issues/3245
+  // https://android-review.googlesource.com/#/c/271775/
+  try {
+    source = rawSocket.source().buffer()
+    sink = rawSocket.sink().buffer()
+  } catch (npe: NullPointerException) {
+    if (npe.message == NPE_THROW_WITH_NULL) {
+      throw IOException(npe)
+    }
+  }
+}
+```
+
+
+
+> 
+
+
+
+
+
+##### 连接复用
+
+
+
+##### 连接清理
 
 
 
@@ -2829,7 +3384,81 @@ fun proxyAuthenticator(proxyAuthenticator: Authenticator) = apply {
 
 #### CookieJar
 
+> 用于管理Cookie的实体类
 
+
+
+> 关于Cookie
+
+> Cookie是一个key=value的键值对，多个cookie之间通过分号和空格即（"; "）分隔。如`Set-Cookie: username=Alice; Expires=Wed, 01-Jan-2023 00:00:00 GMT; Path=/`
+
+> cookie参数含义如下
+>
+> - `username=Alice`自定义的key=value，可以根据实际情况
+> - `Expires=Wed, 01-Jan-2023 00:00:00 GMT`: Cookie 的过期时间，以 GMT 时间格式表示。
+> - `Path=/`: Cookie 的可访问路径，设置为 "/" 表示该 Cookie 可以在整个网站的任意页面中访问。
+
+> 桥接拦截器中有使用到这个类
+
+> 逻辑很简单即在拦截器处理前后获取cookie，更新cookie
+
+```kotlin
+override fun intercept(chain: Interceptor.Chain): Response {
+  
+
+ 
+// 依据url加载cookie
+  val cookies = cookieJar.loadForRequest(userRequest.url)
+    // 将加载的cookie加入header
+  if (cookies.isNotEmpty()) {
+    requestBuilder.header("Cookie", cookieHeader(cookies))
+  }
+
+	// 交由后续拦截器处理，获得response
+  val networkResponse = chain.proceed(requestBuilder.build())
+	// 更新cookie
+  cookieJar.receiveHeaders(userRequest.url, networkResponse.headers)
+
+  //.......
+}
+```
+
+
+
+> 接口
+
+```kotlin
+interface CookieJar {
+  fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>)
+
+ 
+  fun loadForRequest(url: HttpUrl): List<Cookie>
+
+  companion object {
+  	// 一个不包含任何cookie的cookieJar实例
+    @JvmField
+    val NO_COOKIES: CookieJar = NoCookies()
+    private class NoCookies : CookieJar {
+      override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {
+      }
+
+      override fun loadForRequest(url: HttpUrl): List<Cookie> {
+        return emptyList()
+      }
+    }
+  }
+}
+```
+
+
+
+> 向Client配置CookieJar
+
+```kotlin
+val okhttpClient = okhttpBuilder
+    .cookieJar(youCookieJar())
+    .build()
+```
 
 
 
@@ -2859,7 +3488,7 @@ fun proxyAuthenticator(proxyAuthenticator: Authenticator) = apply {
 
 
 
-#### proxy
+#### Proxy
 
 
 

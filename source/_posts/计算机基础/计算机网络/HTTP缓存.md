@@ -2,6 +2,7 @@
 title: HTTP缓存
 date: 2023-02-17 11:03:09
 tags:
+- http
 - 计算机基础
 - 计算机网络
 categories:
