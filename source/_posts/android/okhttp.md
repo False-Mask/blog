@@ -1,5 +1,5 @@
 ---
-title: Okhttp全解析
+title: OkHttp全解析之Http & Websocket
 date: 2023-02-15 19:38:26
 tags:
 - android
@@ -2906,10 +2906,6 @@ fun proxyAuthenticator(proxyAuthenticator: Authenticator) = apply {
 
 
 
-#### timeout
-
-
-
 
 
 #### ConnectionPool
@@ -3232,28 +3228,7 @@ fun connect(
   call: Call,
   eventListener: EventListener
 ) {
-  check(protocol == null) { "already connected" }
-
-  var routeException: RouteException? = null
-  val connectionSpecs = route.address.connectionSpecs
-  val connectionSpecSelector = ConnectionSpecSelector(connectionSpecs)
-
-  if (route.address.sslSocketFactory == null) {
-    if (ConnectionSpec.CLEARTEXT !in connectionSpecs) {
-      throw RouteException(UnknownServiceException(
-          "CLEARTEXT communication not enabled for client"))
-    }
-    val host = route.address.url.host
-    if (!Platform.get().isCleartextTrafficPermitted(host)) {
-      throw RouteException(UnknownServiceException(
-          "CLEARTEXT communication to $host not permitted by network security policy"))
-    }
-  } else {
-    if (Protocol.H2_PRIOR_KNOWLEDGE in route.address.protocols) {
-      throw RouteException(UnknownServiceException(
-          "H2_PRIOR_KNOWLEDGE cannot be used with HTTPS"))
-    }
-  }
+ 	// ......
 
   while (true) {
     try {
@@ -3275,35 +3250,11 @@ fun connect(
       eventListener.connectEnd(call, route.socketAddress, route.proxy, protocol)
       break
     } catch (e: IOException) {
-      socket?.closeQuietly()
-      rawSocket?.closeQuietly()
-      socket = null
-      rawSocket = null
-      source = null
-      sink = null
-      handshake = null
-      protocol = null
-      http2Connection = null
-      allocationLimit = 1
-
-      eventListener.connectFailed(call, route.socketAddress, route.proxy, null, e)
-
-      if (routeException == null) {
-        routeException = RouteException(e)
-      } else {
-        routeException.addConnectException(e)
-      }
-
-      if (!connectionRetryEnabled || !connectionSpecSelector.connectionFailed(e)) {
-        throw routeException
-      }
+      // ......
     }
   }
 
-  if (route.requiresTunnel() && rawSocket == null) {
-    throw RouteException(ProtocolException(
-        "Too many tunnel connections attempted: $MAX_TUNNEL_ATTEMPTS"))
-  }
+//......
 
   idleAtNs = System.nanoTime()
 }
@@ -3336,29 +3287,176 @@ private fun connectSocket(
       // 即 socket.connect(address, connectTimeout)
     Platform.get().connectSocket(rawSocket, route.socketAddress, connectTimeout)
   } catch (e: ConnectException) {
-    throw ConnectException("Failed to connect to ${route.socketAddress}").apply {
-      initCause(e)
-    }
+ 		//......
   }
 
-  // The following try/catch block is a pseudo hacky way to get around a crash on Android 7.0
-  // More details:
-  // https://github.com/square/okhttp/issues/3245
-  // https://android-review.googlesource.com/#/c/271775/
-  try {
-    source = rawSocket.source().buffer()
-    sink = rawSocket.sink().buffer()
-  } catch (npe: NullPointerException) {
-    if (npe.message == NPE_THROW_WITH_NULL) {
-      throw IOException(npe)
+    // ......
+}
+```
+
+
+
+> tls，http协议连接创建
+
+```kotlin
+private fun establishProtocol(
+  connectionSpecSelector: ConnectionSpecSelector,
+  pingIntervalMillis: Int,
+  call: Call,
+  eventListener: EventListener
+) {
+    // 如果没有声明tls连接
+  if (route.address.sslSocketFactory == null) {
+      // Cleartext HTTP/2 with no "upgrade" round trip.
+    if (Protocol.H2_PRIOR_KNOWLEDGE in route.address.protocols) { // 非tls的http2连接
+      socket = rawSocket
+      protocol = Protocol.H2_PRIOR_KNOWLEDGE
+      startHttp2(pingIntervalMillis)
+      return
     }
+	// http 1.1连接
+    socket = rawSocket
+    protocol = Protocol.HTTP_1_1
+    return
+  }
+	// tls + http2连接
+  eventListener.secureConnectStart(call)
+  connectTls(connectionSpecSelector)
+  eventListener.secureConnectEnd(call, handshake)
+
+  if (protocol === Protocol.HTTP_2) {
+    startHttp2(pingIntervalMillis)
   }
 }
 ```
 
 
 
-> 
+> http2连接创建
+
+[http2连接](http://blog.tuzhiqiang.top/2023/03/04/%E8%AE%A1%E7%AE%97%E6%9C%BA%E5%9F%BA%E7%A1%80/%E8%AE%A1%E7%AE%97%E6%9C%BA%E7%BD%91%E7%BB%9C/http2/)
+
+[http2连接](https://halfrost.com/http2_begin/)
+
+```kotlin
+private fun startHttp2(pingIntervalMillis: Int) {
+  val socket = this.socket!!
+  val source = this.source!!
+  val sink = this.sink!!
+  socket.soTimeout = 0 // HTTP/2 connection timeouts are set per-stream.
+    // 参数配置
+  val http2Connection = Http2Connection.Builder(client = true, taskRunner = TaskRunner.INSTANCE)
+      .socket(socket, route.address.url.host, source, sink)
+      .listener(this)
+      .pingIntervalMillis(pingIntervalMillis)
+      .build()
+  this.http2Connection = http2Connection
+  this.allocationLimit = Http2Connection.DEFAULT_SETTINGS.getMaxConcurrentStreams()
+    // 开启连接
+  http2Connection.start()
+}
+```
+
+> 写入连接序言和settings帧可能会写入window update帧
+
+```kotlin
+fun start(sendConnectionPreface: Boolean = true, taskRunner: TaskRunner = TaskRunner.INSTANCE) {
+  if (sendConnectionPreface) {
+      // 写入连接序言 
+      // "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
+    writer.connectionPreface()
+      // 写入setting帧
+    writer.settings(okHttpSettings)
+    val windowSize = okHttpSettings.initialWindowSize
+    if (windowSize != DEFAULT_INITIAL_WINDOW_SIZE) {
+        // 写入update帧
+      writer.windowUpdate(0, (windowSize - DEFAULT_INITIAL_WINDOW_SIZE).toLong())
+    }
+  }
+  // Thread doesn't use client Dispatcher, since it is scoped potentially across clients via
+  // ConnectionPool.
+  taskRunner.newQueue().execute(name = connectionName, block = readerRunnable)
+}
+```
+
+> ssl握手
+
+```kotlin
+private fun connectTls(connectionSpecSelector: ConnectionSpecSelector) {
+  val address = route.address
+  val sslSocketFactory = address.sslSocketFactory
+  var success = false
+  var sslSocket: SSLSocket? = null
+  try {
+    // Create the wrapper over the connected socket.
+      // 创建ssl socket
+    sslSocket = sslSocketFactory!!.createSocket(
+        rawSocket, address.url.host, address.url.port, true /* autoClose */) as SSLSocket
+
+  
+      // 配置socket加密套件，tls版本，扩展（alpn）
+    val connectionSpec = connectionSpecSelector.configureSecureSocket(sslSocket)
+    if (connectionSpec.supportsTlsExtensions) {
+      Platform.get().configureTlsExtensions(sslSocket, address.url.host, address.protocols)
+    }
+
+      // 握手
+    sslSocket.startHandshake()
+    // block for session establishment
+    val sslSocketSession = sslSocket.session
+    val unverifiedHandshake = sslSocketSession.handshake()
+
+    // Verify that the socket's certificates are acceptable for the target host.
+    if (!address.hostnameVerifier!!.verify(address.url.host, sslSocketSession)) {
+      val peerCertificates = unverifiedHandshake.peerCertificates
+      if (peerCertificates.isNotEmpty()) {
+        val cert = peerCertificates[0] as X509Certificate
+        throw SSLPeerUnverifiedException("""
+            |Hostname ${address.url.host} not verified:
+            |    certificate: ${CertificatePinner.pin(cert)}
+            |    DN: ${cert.subjectDN.name}
+            |    subjectAltNames: ${OkHostnameVerifier.allSubjectAltNames(cert)}
+            """.trimMargin())
+      } else {
+        throw SSLPeerUnverifiedException(
+            "Hostname ${address.url.host} not verified (no certificates)")
+      }
+    }
+
+    val certificatePinner = address.certificatePinner!!
+      
+    handshake = Handshake(unverifiedHandshake.tlsVersion, unverifiedHandshake.cipherSuite,
+        unverifiedHandshake.localCertificates) {
+      certificatePinner.certificateChainCleaner!!.clean(unverifiedHandshake.peerCertificates,
+          address.url.host)
+    }
+
+    // Check that the certificate pinner is satisfied by the certificates presented.
+    certificatePinner.check(address.url.host) {
+      handshake!!.peerCertificates.map { it as X509Certificate }
+    }
+
+    // Success! Save the handshake and the ALPN protocol.
+    val maybeProtocol = if (connectionSpec.supportsTlsExtensions) {
+      Platform.get().getSelectedProtocol(sslSocket)
+    } else {
+      null
+    }
+    socket = sslSocket
+    source = sslSocket.source().buffer()
+    sink = sslSocket.sink().buffer()
+    protocol = if (maybeProtocol != null) Protocol.get(maybeProtocol) else Protocol.HTTP_1_1
+    success = true
+  } finally {
+    if (sslSocket != null) {
+      Platform.get().afterHandshake(sslSocket)
+    }
+    if (!success) {
+      sslSocket?.closeQuietly()
+    }
+  }
+}
+```
 
 
 
@@ -3368,15 +3466,380 @@ private fun connectSocket(
 
 
 
+`ExchangeFinder.kt`
+
+```kotlin
+private fun findConnection(
+  connectTimeout: Int,
+  readTimeout: Int,
+  writeTimeout: Int,
+  pingIntervalMillis: Int,
+  connectionRetryEnabled: Boolean
+): RealConnection {
+
+  // Attempt to reuse the connection from the call.
+    // 
+  val callConnection = call.connection // This may be mutated by releaseConnectionNoEvents()!
+  if (callConnection != null) {
+    
+  	// .....
+      // 如果call 本身含有connection，并且非空直接返回
+    if (call.connection != null) {
+      check(toClose == null)
+      return callConnection
+    }
+ 
+      // .....
+  }
+
+  // We need a new connection. Give it fresh stats.
+  refusedStreamCount = 0
+  connectionShutdownCount = 0
+  otherFailureCount = 0
+
+    // 尝试从连接池中获取一个连接
+  if (connectionPool.callAcquirePooledConnection(address, call, null, false)) {
+    val result = call.connection!!
+    eventListener.connectionAcquired(call, result)
+    return result
+  }
+
+    // 加入proxy，selector获取连接
+  val routes: List<Route>?
+  val route: Route
+  if (nextRouteToTry != null) {
+    // Use a route from a preceding coalesced connection.
+    routes = null
+    route = nextRouteToTry!!
+    nextRouteToTry = null
+  } else if (routeSelection != null && routeSelection!!.hasNext()) {
+    // Use a route from an existing route selection.
+    routes = null
+    route = routeSelection!!.next()
+  } else {
+    // Compute a new route selection. This is a blocking operation!
+    var localRouteSelector = routeSelector
+    if (localRouteSelector == null) {
+      localRouteSelector = RouteSelector(address, call.client.routeDatabase, call, eventListener)
+      this.routeSelector = localRouteSelector
+    }
+    val localRouteSelection = localRouteSelector.next()
+    routeSelection = localRouteSelection
+    routes = localRouteSelection.routes
+
+    if (call.isCanceled()) throw IOException("Canceled")
+
+    // 加入proxy等获取连接
+    if (connectionPool.callAcquirePooledConnection(address, call, routes, false)) {
+      val result = call.connection!!
+      eventListener.connectionAcquired(call, result)
+      return result
+    }
+
+    route = localRouteSelection.next()
+  }
+
+  // 创建新的连接
+  val newConnection = RealConnection(connectionPool, route)
+  call.connectionToCancel = newConnection
+  try {
+    newConnection.connect(
+        connectTimeout,
+        readTimeout,
+        writeTimeout,
+        pingIntervalMillis,
+        connectionRetryEnabled,
+        call,
+        eventListener
+    )
+  } finally {
+    call.connectionToCancel = null
+  }
+  call.client.routeDatabase.connected(newConnection.route())
+
+  
+    // 获取多路复用连接
+  if (connectionPool.callAcquirePooledConnection(address, call, routes, true)) {
+    val result = call.connection!!
+    nextRouteToTry = route
+    newConnection.socket().closeQuietly()
+    eventListener.connectionAcquired(call, result)
+    return result
+  }
+
+    // 如果多路复用的连接没有获取到
+    // 将创建的连接存放如连接池
+  synchronized(newConnection) {
+    connectionPool.put(newConnection)
+    call.acquireConnectionNoEvents(newConnection)
+  }
+
+  eventListener.connectionAcquired(call, newConnection)
+  return newConnection
+}
+```
+
+
+
+> 连接池的复用分为3次
+>
+> 1. 第一次复用：如果该call之前已经获取连接（call.connection非null）
+> 2. 第二次复用：从连接池中获取（无Route）
+> 3. 第三次复用：从连接池中获取（有Route）
+> 4. 第四次复用：从连接池中获取（有Route，但要求多路复用）
+
+
+
+
+
+
+
 ##### 连接清理
 
+`ExchangeFinder.kt`
+
+> 每一次使用新创建的连接的时候都会想connectionPool中存入连接
+
+```kotlin
+synchronized(newConnection) {
+      connectionPool.put(newConnection)
+      call.acquireConnectionNoEvents(newConnection)
+}
+```
 
 
 
+`RealConnectionPool.kt`
+
+> 每一次存入连接过程都会想clean队列存入一个clean task
+
+```kotlin
+fun put(connection: RealConnection) {
+  connection.assertThreadHoldsLock()
+
+  connections.add(connection)
+  cleanupQueue.schedule(cleanupTask)
+}
+```
+
+
+
+> 调度
+
+```kotlin
+fun schedule(task: Task, delayNanos: Long = 0L) {
+    // 确保线程安全
+  synchronized(taskRunner) {
+    if (shutdown) {
+      if (task.cancelable) {
+        taskLog(task, this) { "schedule canceled (queue is shutdown)" }
+        return
+      }
+      taskLog(task, this) { "schedule failed (queue is shutdown)" }
+      throw RejectedExecutionException()
+    }
+	// schedule任务
+    if (scheduleAndDecide(task, delayNanos, recurrence = false)) {
+      taskRunner.kickCoordinator(this)
+    }
+  }
+}
+```
+
+
+
+
+
+```kotlin
+internal fun scheduleAndDecide(task: Task, delayNanos: Long, recurrence: Boolean): Boolean {
+    // 初始化cleanQueue
+  task.initQueue(this)
+	// 获取当前时间
+  val now = taskRunner.backend.nanoTime()
+    // 计算执行任务的时间
+  val executeNanoTime = now + delayNanos
+
+  // If the task is already scheduled, take the earlier of the two times.
+  val existingIndex = futureTasks.indexOf(task)
+  if (existingIndex != -1) {
+    if (task.nextExecuteNanoTime <= executeNanoTime) {
+      taskLog(task, this) { "already scheduled" }
+      return false
+    }
+    futureTasks.removeAt(existingIndex) // Already scheduled later: reschedule below!
+  }
+  task.nextExecuteNanoTime = executeNanoTime
+  taskLog(task, this) {
+    if (recurrence) "run again after ${formatDuration(executeNanoTime - now)}"
+    else "scheduled after ${formatDuration(executeNanoTime - now)}"
+  }
+	// 插入任务
+  var insertAt = futureTasks.indexOfFirst { it.nextExecuteNanoTime - now > delayNanos }
+  if (insertAt == -1) insertAt = futureTasks.size
+  futureTasks.add(insertAt, task)
+	// 如果task被插入队首
+  return insertAt == 0
+}
+```
+
+
+
+
+
+```kotlin
+private val runnable: Runnable = object : Runnable {
+    override fun run() {
+      while (true) {
+        val task = synchronized(this@TaskRunner) {
+            // 等待下一次运行
+          awaitTaskToRun()
+        } ?: return
+
+        logElapsed(task, task.queue!!) {
+          var completedNormally = false
+          try {
+              // 执行
+            runTask(task)
+            completedNormally = true
+          } finally {
+            // If the task is crashing start another thread to service the queues.
+            if (!completedNormally) {
+              backend.execute(this)
+            }
+          }
+        }
+      }
+    }
+  }
+
+internal fun kickCoordinator(taskQueue: TaskQueue) {
+  this.assertThreadHoldsLock()
+	// 如果当前队列没有活跃的task
+  if (taskQueue.activeTask == null) {
+      // 加入task
+    if (taskQueue.futureTasks.isNotEmpty()) {
+      readyQueues.addIfAbsent(taskQueue)
+    } else {
+      readyQueues.remove(taskQueue)
+    }
+  }
+
+  if (coordinatorWaiting) {
+    backend.coordinatorNotify(this@TaskRunner)
+  } else {
+      // 执行
+    backend.execute(runnable)
+  }
+}
+```
+
+`RealBackend.kt`
+
+```kotlin
+private val executor = ThreadPoolExecutor(
+        0, // corePoolSize.
+        Int.MAX_VALUE, // maximumPoolSize.
+        60L, TimeUnit.SECONDS, // keepAliveTime.
+        SynchronousQueue(),
+        threadFactory
+    )
+
+override fun execute(runnable: Runnable) {
+      executor.execute(runnable)
+    }
+```
+
+
+
+> 连接清理是通过新建连接的同时向线程池中加入一个清理任务，这样就清理的任务就交给了线程池执行。
+>
+> 清理策略是遍历所有空闲的连接，把超过空闲最大时长的清除，如果都没有超过最大空闲时长，但是空闲连接数超出最大值，则将空闲最久的连接清除。
 
 
 
 #### ConnectSpec
+
+> 用于配置http连接的配置
+
+```kotlin
+class ConnectionSpec internal constructor(
+    // 是否支持tls
+  @get:JvmName("isTls") val isTls: Boolean,
+    // 是否支持tlsExtension
+    // SNI ECC ALPN ......
+  @get:JvmName("supportsTlsExtensions") val supportsTlsExtensions: Boolean,
+    // 支持的加密套件版本号
+  private val cipherSuitesAsString: Array<String>?,
+    // 支持的tls版本号
+  private val tlsVersionsAsString: Array<String>?
+) 
+```
+
+
+
+> 内置的实例化对象
+
+```kotlin
+// 最新的加密配置
+@JvmField
+val RESTRICTED_TLS = Builder(true)
+// 最新的加密套件
+    .cipherSuites(*RESTRICTED_CIPHER_SUITES)
+    .tlsVersions(TlsVersion.TLS_1_3, TlsVersion.TLS_1_2)
+    .supportsTlsExtensions(true)
+    .build()
+
+// 较为现代化的配置
+@JvmField
+    val MODERN_TLS = Builder(true)
+        .cipherSuites(*APPROVED_CIPHER_SUITES)
+        .tlsVersions(TlsVersion.TLS_1_3, TlsVersion.TLS_1_2)
+        .supportsTlsExtensions(true)
+        .build()
+
+// 兼容性的加密配置
+// 支持版本比较多
+@JvmField
+    val COMPATIBLE_TLS = Builder(true)
+        .cipherSuites(*APPROVED_CIPHER_SUITES)
+        .tlsVersions(TlsVersion.TLS_1_3, TlsVersion.TLS_1_2, TlsVersion.TLS_1_1, TlsVersion.TLS_1_0)
+        .supportsTlsExtensions(true)
+        .build()
+
+// 明文
+@JvmField
+ val CLEARTEXT = Builder(false).build()
+```
+
+
+
+> 默认的配置
+
+```kotlin
+internal var connectionSpecs: List<ConnectionSpec> = DEFAULT_CONNECTION_SPECS
+```
+
+```kotlin
+// 即现代化的加密套件和明文
+internal val DEFAULT_CONNECTION_SPECS = immutableListOf(
+    ConnectionSpec.MODERN_TLS, ConnectionSpec.CLEARTEXT)
+```
+
+
+
+> 自定义配置
+
+```kotlin
+val okhttpClient = OkHttpClient.Builder()
+//......
+    .connectionSpecs(listOf(ConnectionSpec.Builder(ConnectionSpec.COMPATIBLE_TLS)
+        .cipherSuites(CipherSuite.TLS_AES_128_CCM_8_SHA256)
+        .build()))
+//......
+    .build()
+```
+
+
 
 
 
@@ -3464,37 +3927,846 @@ val okhttpClient = okhttpBuilder
 
 #### Dispatcher
 
+> 用以调度okhttp call的执行
+
+![image-20230305190959843](https://typora-blog-picture.oss-cn-chengdu.aliyuncs.com/blog/image-20230305190959843.png)
 
 
 
+> 构造函数
+>
+> - `constructor()`
+>
+> - `constructor(executorService: ExecutorService) : this()`
+>
+>   设置线程池
+
+
+
+> 成员属性
+>
+> ```kotlin
+> // 最大并发请求数量，即同时运行的request最大数量。
+> @get:Synchronized var maxRequests = 64
+>   set(maxRequests) {
+>     require(maxRequests >= 1) { "max < 1: $maxRequests" }
+>     synchronized(this) {
+>       field = maxRequests
+>     }
+>       // 尝试执行
+>     promoteAndExecute()
+>   }
+> ```
+>
+> ```kotlin
+> // 每个主机最大请求数目
+> @get:Synchronized var maxRequestsPerHost = 5
+>   set(maxRequestsPerHost) {
+>     require(maxRequestsPerHost >= 1) { "max < 1: $maxRequestsPerHost" }
+>     synchronized(this) {
+>       field = maxRequestsPerHost
+>     }
+>     promoteAndExecute()
+>   }
+> ```
+>
+> ```kotlin
+> // 空闲回调 
+> @set:Synchronized
+>   @get:Synchronized
+>   var idleCallback: Runnable? = null
+> 
+> // 异步运行的线程池
+> private var executorServiceOrNull: ExecutorService? = null
+> 
+>   @get:Synchronized
+>   @get:JvmName("executorService") val executorService: ExecutorService
+>     get() {
+>         // 设置默认线程池
+>       if (executorServiceOrNull == null) {
+>         executorServiceOrNull = ThreadPoolExecutor(0, Int.MAX_VALUE, 60, TimeUnit.SECONDS,
+>             SynchronousQueue(), threadFactory("$okHttpName Dispatcher", false))
+>       }
+>       return executorServiceOrNull!!
+>     }
+> ```
+>
+> ```kotlin
+> // 异步准备call队列
+> private val readyAsyncCalls = ArrayDeque<AsyncCall>()
+> 
+> // 异步运行队列
+> private val runningAsyncCalls = ArrayDeque<AsyncCall>()
+> 
+> // 同步运行队列
+> private val runningSyncCalls = ArrayDeque<RealCall>()
+> ```
+
+
+
+> 成员方法
+>
+> ```kotlin
+> // 执行异步的call
+> internal fun enqueue(call: AsyncCall) {
+>   synchronized(this) {
+>       // 放入准备队列
+>     readyAsyncCalls.add(call)
+> 
+>     // 相同的call公用一个原子integer（用于计数每个host的runningCall数量）
+>     if (!call.call.forWebSocket) {
+>       val existingCall = findExistingCallWithHost(call.host)
+>       if (existingCall != null) call.reuseCallsPerHostFrom(existingCall)
+>     }
+>   }
+>   promoteAndExecute()
+> }
+> 
+> // 寻找与host相同的ayncCall返回满足的第一个call
+>   private fun findExistingCallWithHost(host: String): AsyncCall? {
+>     for (existingCall in runningAsyncCalls) {
+>       if (existingCall.host == host) return existingCall
+>     }
+>     for (existingCall in readyAsyncCalls) {
+>       if (existingCall.host == host) return existingCall
+>     }
+>     return null
+>   }
+> 
+> 
+> // 尝试执行。
+> private fun promoteAndExecute(): Boolean {
+>     this.assertThreadDoesntHoldLock()
+> 
+>     val executableCalls = mutableListOf<AsyncCall>()
+>     val isRunning: Boolean
+>     // 确保安全
+>     synchronized(this) {
+>       val i = readyAsyncCalls.iterator()
+>       while (i.hasNext()) {
+>         val asyncCall = i.next()
+> 		// 如果运行的请求数上限，或者host的请求数超过上限
+>         if (runningAsyncCalls.size >= this.maxRequests) break // Max capacity.
+>         if (asyncCall.callsPerHost.get() >= this.maxRequestsPerHost) continue // Host max capacity.
+> 		// 满足运行条件
+>         // 从ready队列移除
+>         i.remove()
+>           // 累计host的请求数
+>         asyncCall.callsPerHost.incrementAndGet()
+> 			// 放入执行队列
+>         executableCalls.add(asyncCall)
+>         runningAsyncCalls.add(asyncCall)
+>       }
+>       isRunning = runningCallsCount() > 0
+>     }
+> 	// 执行所有的之前筛选出来的asyncCall
+>     for (i in 0 until executableCalls.size) {
+>       val asyncCall = executableCalls[i]
+>       asyncCall.executeOn(executorService)
+>     }
+> 
+>     return isRunning
+>   }
+> ```
+>
+> ```kotlin
+> // 取消所有call
+> @Synchronized fun cancelAll() {
+>   for (call in readyAsyncCalls) {
+>     call.call.cancel()
+>   }
+>   for (call in runningAsyncCalls) {
+>     call.call.cancel()
+>   }
+>   for (call in runningSyncCalls) {
+>     call.cancel()
+>   }
+> }
+> ```
+>
+> ```kotlin
+> // 执行同步请求
+> @Synchronized internal fun executed(call: RealCall) {
+>     // 加入runningCall
+>   runningSyncCalls.add(call)
+> }
+> ```
+>
+> ```kotlin
+> // call执行完成
+> internal fun finished(call: AsyncCall) {
+>   call.callsPerHost.decrementAndGet()
+>   finished(runningAsyncCalls, call)
+> }
+> 
+> internal fun finished(call: RealCall) {
+>     finished(runningSyncCalls, call)
+>   }
+> 
+> private fun <T> finished(calls: Deque<T>, call: T) {
+>     val idleCallback: Runnable?
+>     synchronized(this) {
+>         // 移除
+>       if (!calls.remove(call)) throw AssertionError("Call wasn't in-flight!")
+>       idleCallback = this.idleCallback
+>     }
+> 	// 重新入队
+>     val isRunning = promoteAndExecute()
+> 	// 如果没有可运行的call
+>     if (!isRunning && idleCallback != null) {
+>         // 执行idle
+>       idleCallback.run()
+>     }
+>   }
+> ```
+>
+> ```kotlin
+> // 队列获取
+> @Synchronized fun queuedCalls(): List<Call> {
+>   return Collections.unmodifiableList(readyAsyncCalls.map { it.call })
+> }
+> 
+> @Synchronized fun runningCalls(): List<Call> {
+>   return Collections.unmodifiableList(runningSyncCalls + runningAsyncCalls.map { it.call })
+> }
+> 
+> @Synchronized fun queuedCallsCount(): Int = readyAsyncCalls.size
+> 
+> @Synchronized fun runningCallsCount(): Int = runningAsyncCalls.size + runningSyncCalls.size
+> ```
+
+
+
+> 可见，dispatcher就是调度器，控制call的调度方式，同步异步调度。
+
+`RealCall`
+
+```kotlin
+override fun execute(): Response {
+  check(executed.compareAndSet(false, true)) { "Already Executed" }
+
+  timeout.enter()
+  callStart()
+  try {
+    client.dispatcher.executed(this)
+    return getResponseWithInterceptorChain()
+  } finally {
+    client.dispatcher.finished(this)
+  }
+}
+
+override fun enqueue(responseCallback: Callback) {
+  check(executed.compareAndSet(false, true)) { "Already Executed" }
+
+  callStart()
+  client.dispatcher.enqueue(AsyncCall(responseCallback))
+}
+```
 
 
 
 #### Dns
 
+> DNS即Domain Name System
+
+> 可以用于获取域名到IP地址的映射的分布式k-v数据库
+
+```kotlin
+interface Dns {
+    
+  @Throws(UnknownHostException::class)
+  fun lookup(hostname: String): List<InetAddress>
+
+}
+```
+
+
+
+> 内置实例
+
+```kotlin
+companion object {
+
+  @JvmField
+  val SYSTEM: Dns = DnsSystem()
+  private class DnsSystem : Dns {
+    override fun lookup(hostname: String): List<InetAddress> {
+      try {
+        return InetAddress.getAllByName(hostname).toList()
+      } catch (e: NullPointerException) {
+        throw UnknownHostException("Broken system behaviour for dns lookup of $hostname").apply {
+          initCause(e)
+        }
+      }
+    }
+  }
+}
+```
+
+
+
+> 过程
+
+`ConnectInterceptor` ->
+
+​	`realChain.call.initExchange(chain)`->
+
+​		`exchangeFinder.find(client, chain)`->
+
+​			......
+
+​				`findConnection`->
+
+​					`localRouteSelector.next()`
+
+
+
+`RouteSelector.kt`
+
+```kotlin
+@Throws(IOException::class)
+private fun resetNextInetSocketAddress(proxy: Proxy) {
+  // Clear the addresses. Necessary if getAllByName() below throws!
+  val mutableInetSocketAddresses = mutableListOf<InetSocketAddress>()
+  inetSocketAddresses = mutableInetSocketAddresses
+
+  val socketHost: String
+  val socketPort: Int
+    // 获取代理的地址
+  if (proxy.type() == Proxy.Type.DIRECT || proxy.type() == Proxy.Type.SOCKS) {
+    socketHost = address.url.host
+    socketPort = address.url.port
+  } else {
+    val proxyAddress = proxy.address()
+    require(proxyAddress is InetSocketAddress) {
+      "Proxy.address() is not an InetSocketAddress: ${proxyAddress.javaClass}"
+    }
+    socketHost = proxyAddress.socketHost
+    socketPort = proxyAddress.port
+  }
+
+    // socks代理
+  if (proxy.type() == Proxy.Type.SOCKS) {
+    mutableInetSocketAddresses += InetSocketAddress.createUnresolved(socketHost, socketPort)
+  } else {
+      // 查看dns
+    eventListener.dnsStart(call, socketHost)
+
+    // Try each address for best behavior in mixed IPv4/IPv6 environments.
+    val addresses = address.dns.lookup(socketHost)
+    if (addresses.isEmpty()) {
+      throw UnknownHostException("${address.dns} returned no addresses for $socketHost")
+    }
+
+    eventListener.dnsEnd(call, socketHost, addresses)
+
+    for (inetAddress in addresses) {
+      mutableInetSocketAddresses += InetSocketAddress(inetAddress, socketPort)
+    }
+  }
+}
+```
+
+
+
+> DNS即在RouteSelector解析Proxy时解析hostName
+
+
+
+#### Proxy/ProxySelector
+
+> 类结构信息
+
+> Proxy是Java net的一个bean包含type和address
+>
+> - type
+>
+>   即代理类型DIRECT（直连），HTTP（HTTP代理），SOCKS（SOCKS代理）
+
+![image-20230305175434624](https://typora-blog-picture.oss-cn-chengdu.aliyuncs.com/blog/image-20230305175434624.png)
+
+
+
+> ProxySelector 
+
+> proxy的factory，一次可以生产一个proxy集合
+
+![image-20230305181104847](https://typora-blog-picture.oss-cn-chengdu.aliyuncs.com/blog/image-20230305181104847.png)
+
+
+
+`RouteSelector.kt`
+
+```kotlin
+
+  init {
+    resetNextProxy(address.url, address.proxy)
+  }
+
+private fun resetNextProxy(url: HttpUrl, proxy: Proxy?) {
+    fun selectProxies(): List<Proxy> {
+        // 如果有proxy，使用proxy
+        // 没proxy使用proxySelector
+      if (proxy != null) return listOf(proxy)
+
+   
+      val uri = url.toUri()
+      if (uri.host == null) return immutableListOf(Proxy.NO_PROXY)
+
+      val proxiesOrNull = address.proxySelector.select(uri)
+      if (proxiesOrNull.isNullOrEmpty()) return immutableListOf(Proxy.NO_PROXY)
+
+      return proxiesOrNull.toImmutableList()
+    }
+
+    eventListener.proxySelectStart(call, url)
+    proxies = selectProxies()
+    nextProxyIndex = 0
+    eventListener.proxySelectEnd(call, url, proxies)
+  }
+```
+
+
+
+> Proxy的使用会经由如下调用
+>
+> （获取的proxy会根据dns获取ip）
+
+`RouteSelector.next`->
+
+​	`nextProxy`->
+
+​		`proxies[nextProxyIndex++]`（依据放入次序顺序拿去proxy）
+
+> 配置
+
+```kotlin
+val okhttpClient = OkHttpClient.Builder()
+    .proxy(Proxy.NO_PROXY)
+    .proxySelector(ProxySelector.getDefault())
+    .build()
+```
+
 
 
 #### EventListener
 
+> 事件监听器
+
+```kotlin
+abstract class EventListener {
+
+  open fun callStart(
+    call: Call
+  ) {
+  }
+
+  open fun proxySelectStart(
+    call: Call,
+    url: HttpUrl
+  ) {
+  }
+
+  open fun proxySelectEnd(
+    call: Call,
+    url: HttpUrl,
+    proxies: List<@JvmSuppressWildcards Proxy>
+  ) {
+  }
+
+  open fun dnsStart(
+    call: Call,
+    domainName: String
+  ) {
+  }
+
+  open fun dnsEnd(
+    call: Call,
+    domainName: String,
+    inetAddressList: List<@JvmSuppressWildcards InetAddress>
+  ) {
+  }
+
+  open fun connectStart(
+    call: Call,
+    inetSocketAddress: InetSocketAddress,
+    proxy: Proxy
+  ) {
+  }
+
+  open fun secureConnectStart(
+    call: Call
+  ) {
+  }
+
+  open fun secureConnectEnd(
+    call: Call,
+    handshake: Handshake?
+  ) {
+  }
+
+  open fun connectEnd(
+    call: Call,
+    inetSocketAddress: InetSocketAddress,
+    proxy: Proxy,
+    protocol: Protocol?
+  ) {
+  }
+
+  open fun connectFailed(
+    call: Call,
+    inetSocketAddress: InetSocketAddress,
+    proxy: Proxy,
+    protocol: Protocol?,
+    ioe: IOException
+  ) {
+  }
+
+  open fun connectionAcquired(
+    call: Call,
+    connection: Connection
+  ) {
+  }
+
+  open fun connectionReleased(
+    call: Call,
+    connection: Connection
+  ) {
+  }
+
+  open fun requestHeadersStart(
+    call: Call
+  ) {
+  }
+
+  open fun requestHeadersEnd(call: Call, request: Request) {
+  }
+
+  open fun requestBodyStart(
+    call: Call
+  ) {
+  }
+
+  open fun requestBodyEnd(
+    call: Call,
+    byteCount: Long
+  ) {
+  }
+
+  open fun requestFailed(
+    call: Call,
+    ioe: IOException
+  ) {
+  }
+
+  open fun responseHeadersStart(
+    call: Call
+  ) {
+  }
+
+  open fun responseHeadersEnd(
+    call: Call,
+    response: Response
+  ) {
+  }
+
+  open fun responseBodyStart(
+    call: Call
+  ) {
+  }
+
+  open fun responseBodyEnd(
+    call: Call,
+    byteCount: Long
+  ) {
+  }
+
+  open fun responseFailed(
+    call: Call,
+    ioe: IOException
+  ) {
+  }
+
+  open fun callEnd(
+    call: Call
+  ) {
+  }
+
+  
+  open fun callFailed(
+    call: Call,
+    ioe: IOException
+  ) {
+  }
+
+  
+  open fun canceled(
+    call: Call
+  ) {
+  }
+
+ 
+  open fun satisfactionFailure(call: Call, response: Response) {
+  }
+
+  
+  open fun cacheHit(call: Call, response: Response) {
+  }
+
+  
+  open fun cacheMiss(call: Call) {
+  }
+
+ 
+  open fun cacheConditionalHit(call: Call, cachedResponse: Response) {
+  }
+
+}
+```
 
 
-#### redirect
+
+#### ssl连接配置
+
+> 此过程包含3部分
+>
+> - `sslSocketFactory`
+>
+>   - `sslSocketFactory`
+>
+>     管理ssl socket创建
+>
+>   - `trustManager`
+>
+>     用于管理客户端可信证书
+>
+> - `hostnameVerifier`
+>
+>   依据host和ssl会话判断是否接入
+>
+> - `certificatePinner`
+>
+>   绑定服务端的证书证书
+>
+
+
+
+> 配置逻辑
+
+```kotlin
+init {
+    // 如果不是是tls连接
+  if (connectionSpecs.none { it.isTls }) {
+      // 无需sslSocket，certificate当然也不需要证书绑定
+    this.sslSocketFactoryOrNull = null
+    this.certificateChainCleaner = null
+    this.x509TrustManager = null
+    this.certificatePinner = CertificatePinner.DEFAULT
+  } else if (builder.sslSocketFactoryOrNull != null) {
+      // 如果设置了sslSocketFactory，采用设置的参数
+    this.sslSocketFactoryOrNull = builder.sslSocketFactoryOrNull
+    this.certificateChainCleaner = builder.certificateChainCleaner!!
+    this.x509TrustManager = builder.x509TrustManagerOrNull!!
+    this.certificatePinner = builder.certificatePinner
+        .withCertificateChainCleaner(certificateChainCleaner!!)
+  } else {
+      // 如果是tls连接，并且没有设置配置
+      // 获取平台的默认实现
+    this.x509TrustManager = Platform.get().platformTrustManager()
+    this.sslSocketFactoryOrNull = Platform.get().newSslSocketFactory(x509TrustManager!!)
+    this.certificateChainCleaner = CertificateChainCleaner.get(x509TrustManager!!)
+    this.certificatePinner = builder.certificatePinner
+        .withCertificateChainCleaner(certificateChainCleaner!!)
+  }
+```
+
+> 配置sslSocketFactory
+
+```kotlin
+fun sslSocketFactory(
+  sslSocketFactory: SSLSocketFactory,
+  trustManager: X509TrustManager
+) = apply {
+  if (sslSocketFactory != this.sslSocketFactoryOrNull || trustManager != this.x509TrustManagerOrNull) {
+    this.routeDatabase = null
+  }
+	// 用于创建sslSocket即tls连接
+  this.sslSocketFactoryOrNull = sslSocketFactory
+    // 用于对无关证书进行清理，每次tls握手发送的ca证书都会经过cleaner清理
+  this.certificateChainCleaner = CertificateChainCleaner.get(trustManager)
+    // 证书的管理类
+  this.x509TrustManagerOrNull = trustManager
+}
+```
+
+> 证书绑定
+
+```kotlin
+fun certificatePinner(certificatePinner: CertificatePinner) = apply {
+  if (certificatePinner != this.certificatePinner) {
+    this.routeDatabase = null
+  }
+
+  this.certificatePinner = certificatePinner
+}
+```
+
+> hostname校验
+
+```kotlin
+fun hostnameVerifier(hostnameVerifier: HostnameVerifier) = apply {
+  if (hostnameVerifier != this.hostnameVerifier) {
+    this.routeDatabase = null
+  }
+
+  this.hostnameVerifier = hostnameVerifier
+}
+```
+
+
+
+`RealConnection.kt`
+
+> tls连接建立过程
+
+```kotlin
+private fun connectTls(connectionSpecSelector: ConnectionSpecSelector) {
+    val address = route.address
+    val sslSocketFactory = address.sslSocketFactory
+    var success = false
+    var sslSocket: SSLSocket? = null
+    try {
+      // 创建用于tls的socket
+      sslSocket = sslSocketFactory!!.createSocket(
+          rawSocket, address.url.host, address.url.port, true /* autoClose */) as SSLSocket
+
+      // 配置socket连接
+      val connectionSpec = connectionSpecSelector.configureSecureSocket(sslSocket)
+      if (connectionSpec.supportsTlsExtensions) {
+        Platform.get().configureTlsExtensions(sslSocket, address.url.host, address.protocols)
+      }
+
+      // tls握手
+      sslSocket.startHandshake()
+  
+      val sslSocketSession = sslSocket.session
+      val unverifiedHandshake = sslSocketSession.handshake()
+
+      // 校验hostname
+      if (!address.hostnameVerifier!!.verify(address.url.host, sslSocketSession)) {
+        val peerCertificates = unverifiedHandshake.peerCertificates
+        if (peerCertificates.isNotEmpty()) {
+          val cert = peerCertificates[0] as X509Certificate
+          throw SSLPeerUnverifiedException(......)
+        } else {
+          throw SSLPeerUnverifiedException("Hostname ${address.url.host} not verified (no certificates)")
+        }
+      }
+
+      val certificatePinner = address.certificatePinner!!
+
+      handshake = Handshake(unverifiedHandshake.tlsVersion, unverifiedHandshake.cipherSuite,
+          unverifiedHandshake.localCertificates) {
+        certificatePinner.certificateChainCleaner!!.clean(unverifiedHandshake.peerCertificates,
+            address.url.host)
+      }
+
+      // 服务端证书绑定
+      certificatePinner.check(address.url.host) {
+        handshake!!.peerCertificates.map { it as X509Certificate }
+      }
+
+      // 校验成功
+      val maybeProtocol = if (connectionSpec.supportsTlsExtensions) {
+        Platform.get().getSelectedProtocol(sslSocket)
+      } else {
+        null
+      }
+      // ......
+    } finally {
+       // ......
+    }
+  }
+  }
+```
+
+
+
+> tls连接过程
+
+![okhttp-tls.drawio](https://typora-blog-picture.oss-cn-chengdu.aliyuncs.com/blog/okhttp-tls.drawio.png)
 
 
 
 
 
-#### HostnameVerifier
 
 
 
-#### Proxy
+
+
+
+
+
+
 
 
 
 
 
 #### socket
+
+> `SocketFactory`可以用来创建socket
+
+`RealConnection.kt`
+
+> 当需要连接socket时会通过socketFactory创建socket
+
+```kotlin
+private fun connectSocket(
+  connectTimeout: Int,
+  readTimeout: Int,
+  call: Call,
+  eventListener: EventListener
+) {
+ 	
+    val proxy = route.proxy
+    val address = route.address
+
+    val rawSocket = when (proxy.type()) {
+      Proxy.Type.DIRECT, Proxy.Type.HTTP -> address.socketFactory.createSocket()!!
+      else -> Socket(proxy)
+    }
+    //......
+    
+}    
+```
+
+
+
+> `SocketFactory`类结构
+
+![image-20230307165012458](https://typora-blog-picture.oss-cn-chengdu.aliyuncs.com/blog/image-20230307165012458.png)
+
+
+
+`OkHttpClient.kt`
+
+> 设置socketFactory
+
+```kotlin
+fun socketFactory(socketFactory: SocketFactory) = apply {
+  require(socketFactory !is SSLSocketFactory) { "socketFactory instanceof SSLSocketFactory" }
+
+  if (socketFactory != this.socketFactory) {
+    this.routeDatabase = null
+  }
+
+  this.socketFactory = socketFactory
+}
+```
+
+
 
 
 
@@ -3504,7 +4776,231 @@ val okhttpClient = okhttpBuilder
 
 #### 其他
 
+- 重定向
 
+  - `followRedirects`
+
+    相同协议是否进行重定向http -> http,https -> https
+
+  - `followSslRedirects`
+
+    不同协议是否进行重定向，http-> https ,https -> http
+
+- 协议配置
+
+  - `protocols`
+
+- 超时配置
+
+  - `callTimeoutMillis`
+
+  - `connectTimeMillis`
+  - `readTimeoutMillis`
+
+  - `writeTimeoutMillis`
+
+  - `pingIntervalMillis`
+
+- 其他
+
+  - 
+
+
+
+##### 重定向
+
+> 调用栈
+
+`RetryAndFollowUpInterceptor.intercept` ->
+
+​	`followUpRequest`->
+
+​		`buildRedirectRequest`->
+
+```kotlin
+private fun buildRedirectRequest(userResponse: Response, method: String): Request? {
+ 	
+    if (!client.followRedirects) return null
+    
+    // ......
+    val sameScheme = url.scheme == userResponse.request.url.scheme
+    if (!sameScheme && !client.followSslRedirects) return null
+    
+}    
+```
+
+
+
+##### 协议配置
+
+
+
+```kotlin
+enum class Protocol(private val protocol: String) {
+    
+  HTTP_1_0("http/1.0"),
+
+  HTTP_1_1("http/1.1"),
+
+  @Deprecated("OkHttp has dropped support for SPDY. Prefer {@link #HTTP_2}.")
+  SPDY_3("spdy/3.1"),
+
+  HTTP_2("h2"),
+
+  H2_PRIOR_KNOWLEDGE("h2_prior_knowledge"),
+
+  QUIC("quic");
+    
+  override fun toString() = protocol
+
+}
+
+```
+
+
+
+> 默认协议配置
+
+```kotlin
+internal val DEFAULT_PROTOCOLS = immutableListOf(HTTP_2, HTTP_1_1)
+```
+
+
+
+> 配置连接
+
+> 主要适配了http2协议
+
+```kotlin
+private fun establishProtocol(
+  connectionSpecSelector: ConnectionSpecSelector,
+  pingIntervalMillis: Int,
+  call: Call,
+  eventListener: EventListener
+) {
+    // 没有设置tls连接
+  if (route.address.sslSocketFactory == null) {
+      // h2w
+    if (Protocol.H2_PRIOR_KNOWLEDGE in route.address.protocols) {
+      socket = rawSocket
+      protocol = Protocol.H2_PRIOR_KNOWLEDGE
+      startHttp2(pingIntervalMillis)
+      return
+    }
+
+    socket = rawSocket
+    protocol = Protocol.HTTP_1_1
+    return
+  }
+
+  eventListener.secureConnectStart(call)
+  connectTls(connectionSpecSelector)
+  eventListener.secureConnectEnd(call, handshake)
+    // h2
+  if (protocol === Protocol.HTTP_2) {
+    startHttp2(pingIntervalMillis)
+  }
+}
+```
+
+
+
+##### 超时配置
+
+
+
+> callTimeout
+
+`Builder.kt`
+
+```kotlin
+// 默认没有打开超时 
+internal var callTimeout = 0
+```
+
+`OkHttpClient.kt`
+
+```kotlin
+val callTimeoutMillis: Int = builder.callTimeout
+```
+
+`RealCall.kt`
+
+```kotlin
+private val timeout = object : AsyncTimeout() {
+  override fun timedOut() {
+    cancel()
+  }
+}.apply {
+  timeout(client.callTimeoutMillis.toLong(), MILLISECONDS)
+}
+```
+
+
+
+> 如下设置会直接映射到socket的超时设置（10秒）
+
+```kotlin
+internal var connectTimeout = 10_000
+internal var readTimeout = 10_000
+internal var writeTimeout = 10_000
+```
+
+
+
+> Web socket and HTTP/2 ping interval (in milliseconds). By default pings are not sent.
+>
+> web socket或者http/2的心跳包间隔时间，默认没有设置心跳包
+
+```kotlin
+internal var pingInterval = 0
+```
+
+`RealConnection.kt`
+
+```kotlin
+private fun startHttp2(pingIntervalMillis: Int) {
+  val socket = this.socket!!
+  val source = this.source!!
+  val sink = this.sink!!
+    // 0心跳包
+  socket.soTimeout = 0 // HTTP/2 connection timeouts are set per-stream.
+  val http2Connection = Http2Connection.Builder(client = true, taskRunner = TaskRunner.INSTANCE)
+      .socket(socket, route.address.url.host, source, sink)
+      .listener(this)
+      .pingIntervalMillis(pingIntervalMillis)
+      .build()
+  this.http2Connection = http2Connection
+  this.allocationLimit = Http2Connection.DEFAULT_SETTINGS.getMaxConcurrentStreams()
+  http2Connection.start()
+}
+```
+
+`Http2Connection`
+
+```kotlin
+if (builder.pingIntervalMillis != 0) { // 如果pingIntervalMillis则表明没有心跳包
+    // 入队执行
+  val pingIntervalNanos = TimeUnit.MILLISECONDS.toNanos(builder.pingIntervalMillis.toLong())
+  writerQueue.schedule("$connectionName ping", pingIntervalNanos) {
+    val failDueToMissingPong = synchronized(this@Http2Connection) {
+      if (intervalPongsReceived < intervalPingsSent) {
+        return@synchronized true
+      } else {
+        intervalPingsSent++
+        return@synchronized false
+      }
+    }
+    if (failDueToMissingPong) {
+      failConnection(null)
+      return@schedule -1L
+    } else {
+      writePing(false, INTERVAL_PING, 0)
+      return@schedule pingIntervalNanos
+    }
+  }
+}
+```
 
 
 
@@ -3514,7 +5010,461 @@ val okhttpClient = okhttpBuilder
 
 
 
+### 使用
+
+
+
+> 可以发现Websocket的使用和http请求过程是类似的，只是在request设置上有少许不同。
+>
+> 另外http是通过newCall获取call实例对象，而websocket是通过newWebsocket创建call对象
+
+```kotlin
+fun main() {
+
+    val request = Request.Builder()
+        .get()
+        .url("ws://ip:port")
+        .build()
+
+    val webSocket = okhttpClient.newWebSocket(request, object : WebSocketListener() {
+        override fun onMessage(webSocket: WebSocket, text: String) {
+            println(text)
+            super.onMessage(webSocket, text)
+        }
+
+        override fun onOpen(webSocket: WebSocket, response: Response) {
+            super.onOpen(webSocket, response)
+            println(response)
+        }
+
+        override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+            super.onFailure(webSocket, t, response)
+            println(t)
+        }
+    })
+
+  	// write
+    // ......
+
+}
+```
+
+
+
+### Websocket创建
+
+> 创建websocket连接
+
+```kotlin
+override fun newWebSocket(request: Request, listener: WebSocketListener): WebSocket {
+    // websocket实例类似于RealCall
+  val webSocket = RealWebSocket(
+      taskRunner = TaskRunner.INSTANCE,
+      originalRequest = request,
+      listener = listener,
+      random = Random(),
+      pingIntervalMillis = pingIntervalMillis.toLong(),
+      extensions = null, // Always null for clients.
+      minimumDeflateSize = minWebSocketMessageToCompress
+  )
+    // 连接
+  webSocket.connect(this)
+  return webSocket
+}
+```
+
+> 与服务端建立websocket连接
+
+```kotlin
+fun connect(client: OkHttpClient) {
+  if (originalRequest.header("Sec-WebSocket-Extensions") != null) {
+    failWebSocket(ProtocolException(
+        "Request header not permitted: 'Sec-WebSocket-Extensions'"), null)
+    return
+  }
+// 配置专用的client
+  val webSocketClient = client.newBuilder()
+      .eventListener(EventListener.NONE)
+      .protocols(ONLY_HTTP1)
+      .build()
+    // 使用http/1.1发送协议升级请求
+  val request = originalRequest.newBuilder()
+      .header("Upgrade", "websocket")
+      .header("Connection", "Upgrade")
+      .header("Sec-WebSocket-Key", key)
+      .header("Sec-WebSocket-Version", "13")
+      .header("Sec-WebSocket-Extensions", "permessage-deflate")
+      .build()
+    // 创建call对象
+  call = RealCall(webSocketClient, request, forWebSocket = true)
+    // 异步请求
+  call!!.enqueue(object : Callback {
+    override fun onResponse(call: Call, response: Response) {
+      val exchange = response.exchange
+      val streams: Streams
+      try {
+          // 查看协议升级结果
+        checkUpgradeSuccess(response, exchange)
+        streams = exchange!!.newWebSocketStreams()
+      } catch (e: IOException) { // 异常处理，关闭请求
+        exchange?.webSocketUpgradeFailed()
+        failWebSocket(e, response)
+        response.closeQuietly()
+        return
+      }
+
+      // Apply the extensions. If they're unacceptable initiate a graceful shut down.
+      // TODO(jwilson): Listeners should get onFailure() instead of onClosing() + onClosed(1010).
+        // 解析配置参数
+      val extensions = WebSocketExtensions.parse(response.headers)
+      this@RealWebSocket.extensions = extensions
+      if (!extensions.isValid()) {
+        synchronized(this@RealWebSocket) {
+          messageAndCloseQueue.clear() // Don't transmit any messages.
+          close(1010, "unexpected Sec-WebSocket-Extensions in response header")
+        }
+      }
+
+      // Process all web socket messages.
+      try {
+        val name = "$okHttpName WebSocket ${request.url.redact()}"
+          // 初始化必要参数信息
+        initReaderAndWriter(name, streams)
+          // 通知listener
+        listener.onOpen(this@RealWebSocket, response)
+          // 死循环读取消息
+        loopReader()
+      } catch (e: Exception) {
+        failWebSocket(e, null)
+      }
+    }
+
+    override fun onFailure(call: Call, e: IOException) {
+        // 关闭请求
+      failWebSocket(e, null)
+    }
+  })
+}
+```
+
+
+
+> 初始化websocket成员变量和连接必要参数
+
+> 特别重要
+
+```kotlin
+fun initReaderAndWriter(name: String, streams: Streams) {
+  val extensions = this.extensions!!
+  synchronized(this) {
+      // 参数
+    this.name = name
+    this.streams = streams
+		// 连接包装类，writer
+    this.writer = WebSocketWriter(
+        isClient = streams.client,
+        sink = streams.sink,
+        random = random,
+        perMessageDeflate = extensions.perMessageDeflate,
+        noContextTakeover = extensions.noContextTakeover(streams.client),
+        minimumDeflateSize = minimumDeflateSize
+    )
+      // 写task
+    this.writerTask = WriterTask()
+      // 用于发送心跳包的task
+    if (pingIntervalMillis != 0L) {
+      val pingIntervalNanos = MILLISECONDS.toNanos(pingIntervalMillis)
+      taskQueue.schedule("$name ping", pingIntervalNanos) {
+        writePingFrame()
+        return@schedule pingIntervalNanos
+      }
+    }
+    if (messageAndCloseQueue.isNotEmpty()) {
+      runWriter() // Send messages that were enqueued before we were connected.
+    }
+  }
+	// 连接包装类，reader
+  reader = WebSocketReader(
+      isClient = streams.client,
+      source = streams.source,
+      frameCallback = this,
+      perMessageDeflate = extensions.perMessageDeflate,
+      noContextTakeover = extensions.noContextTakeover(!streams.client)
+  )
+}
+```
+
+
+
+> 读取数据
+
+```kotlin
+fun loopReader() {
+    // 只要没有关闭，死循环读取
+  while (receivedCloseCode == -1) {
+    // This method call results in one or more onRead* methods being called on this thread.
+    reader!!.processNextFrame()
+  }
+}
+```
+
+
+
+> 读取
+
+```kotlin
+@Throws(IOException::class)
+fun processNextFrame() {
+    // 读头部
+  readHeader()
+    // 读control或者message帧
+  if (isControlFrame) {
+    readControlFrame()
+  } else {
+    readMessageFrame()
+  }
+}
+```
+
+
+
+> 监听
+
+```kotlin
+private fun readControlFrame() {
+   
+    when (opcode) {
+      OPCODE_CONTROL_PING -> {
+          // ping
+        frameCallback.onReadPing(controlFrameBuffer.readByteString())
+      }
+      OPCODE_CONTROL_PONG -> {
+          // pong
+        frameCallback.onReadPong(controlFrameBuffer.readByteString())
+      }
+      OPCODE_CONTROL_CLOSE -> {
+        / ......
+          // close
+        frameCallback.onReadClose(code, reason)
+        closed = true
+      }
+    }
+  }
+```
+
+
+
+```kotlin
+private fun readMessageFrame() {
+  val opcode = this.opcode
+  if (opcode != OPCODE_TEXT && opcode != OPCODE_BINARY) {
+    throw ProtocolException("Unknown opcode: ${opcode.toHexString()}")
+  }
+
+  readMessage()
+
+  // message
+
+  if (opcode == OPCODE_TEXT) {
+    frameCallback.onReadMessage(messageFrameBuffer.readUtf8())
+  } else {
+    frameCallback.onReadMessage(messageFrameBuffer.readByteString())
+  }
+}
+```
+
+> framecallback会调用到RealWebSocket的方法
+
+![image-20230308142207355](https://typora-blog-picture.oss-cn-chengdu.aliyuncs.com/blog/image-20230308142207355.png)
+
+
+
+> 方法如下
+
+```kotlin
+@Throws(IOException::class)
+override fun onReadMessage(text: String) {
+  listener.onMessage(this, text)
+}
+
+@Throws(IOException::class)
+override fun onReadMessage(bytes: ByteString) {
+  listener.onMessage(this, bytes)
+}
+
+@Synchronized override fun onReadPing(payload: ByteString) {
+    // Don't respond to pings after we've failed or sent the close frame.
+    if (failed || enqueuedClose && messageAndCloseQueue.isEmpty()) return
+
+    pongQueue.add(payload)
+    runWriter()
+    receivedPingCount++
+  }
+
+  @Synchronized override fun onReadPong(payload: ByteString) {
+    // This API doesn't expose pings.
+    receivedPongCount++
+    awaitingPong = false
+  }
+
+  override fun onReadClose(code: Int, reason: String) {
+    require(code != -1)
+
+    var toClose: Streams? = null
+    var readerToClose: WebSocketReader? = null
+    var writerToClose: WebSocketWriter? = null
+    synchronized(this) {
+      check(receivedCloseCode == -1) { "already closed" }
+      receivedCloseCode = code
+      receivedCloseReason = reason
+      if (enqueuedClose && messageAndCloseQueue.isEmpty()) {
+        toClose = this.streams
+        this.streams = null
+        readerToClose = this.reader
+        this.reader = null
+        writerToClose = this.writer
+        this.writer = null
+        this.taskQueue.shutdown()
+      }
+    }
+
+    try {
+      listener.onClosing(this, code, reason)
+
+      if (toClose != null) {
+        listener.onClosed(this, code, reason)
+      }
+    } finally {
+      toClose?.closeQuietly()
+      readerToClose?.closeQuietly()
+      writerToClose?.closeQuietly()
+    }
+  }
+```
 
 
 
 
+
+### Websocket消息发送
+
+```kotlin
+override fun send(text: String): Boolean {
+    // 发送text
+  return send(text.encodeUtf8(), OPCODE_TEXT)
+}
+
+override fun send(bytes: ByteString): Boolean {
+    // 发送二进制消息
+  return send(bytes, OPCODE_BINARY)
+}
+
+@Synchronized private fun send(data: ByteString, formatOpcode: Int): Boolean {
+  // Don't send new frames after we've failed or enqueued a close frame.
+    // 确保没有异常
+  if (failed || enqueuedClose) return false
+
+  // If this frame overflows the buffer, reject it and close the web socket.
+    // 如果待发送数据长度大于指定大小（15m）
+    // 由于write操作是先写入Buffer然后在发送给服务端，为了避免oom限制大小。
+  if (queueSize + data.size > MAX_QUEUE_SIZE) {
+    close(CLOSE_CLIENT_GOING_AWAY, null)
+    return false
+  }
+
+  // Enqueue the message frame.
+    // 累计大小
+  queueSize += data.size.toLong()
+  messageAndCloseQueue.add(Message(formatOpcode, data))
+    // 执行task
+  runWriter()
+  return true
+}
+```
+
+> 线程池入队
+
+```kotlin
+private fun runWriter() {
+  this.assertThreadHoldsLock()
+
+  val writerTask = writerTask
+  if (writerTask != null) {
+    taskQueue.schedule(writerTask)
+  }
+}
+```
+
+> task
+
+```kotlin
+private inner class WriterTask : Task("$name writer") {
+  override fun runOnce(): Long {
+    try {
+      if (writeOneFrame()) return 0L
+    } catch (e: IOException) {
+      failWebSocket(e, null)
+    }
+    return -1L
+  }
+}
+```
+
+
+
+> 写入一个数据帧
+
+```kotlin
+internal fun writeOneFrame(): Boolean {
+  val writer: WebSocketWriter?
+  val pong: ByteString?
+  var messageOrClose: Any? = null
+  var receivedCloseCode = -1
+  var receivedCloseReason: String? = null
+  var streamsToClose: Streams? = null
+  var readerToClose: WebSocketReader? = null
+  var writerToClose: WebSocketWriter? = null
+
+  synchronized(this@RealWebSocket) {
+    if (failed) {
+      return false // Failed web socket.
+    }
+
+    writer = this.writer
+    pong = pongQueue.poll()
+    if (pong == null) {
+      //......
+    }
+  }
+
+  try {
+    if (pong != null) {
+      writer!!.writePong(pong)
+    } else if (messageOrClose is Message) { // 发送请求
+      val message = messageOrClose as Message
+        // 写入message帧
+      writer!!.writeMessageFrame(message.formatOpcode, message.data)
+      synchronized(this) {
+        queueSize -= message.data.size.toLong()
+      }
+    } else if (messageOrClose is Close) {
+      val close = messageOrClose as Close
+      writer!!.writeClose(close.code, close.reason)
+
+      // We closed the writer: now both reader and writer are closed.
+      if (streamsToClose != null) {
+        listener.onClosed(this, receivedCloseCode, receivedCloseReason!!)
+      }
+    } else {
+      throw AssertionError()
+    }
+
+    return true
+  } finally {
+      // 关闭
+    streamsToClose?.closeQuietly()
+    readerToClose?.closeQuietly()
+    writerToClose?.closeQuietly()
+  }
+}
+```
