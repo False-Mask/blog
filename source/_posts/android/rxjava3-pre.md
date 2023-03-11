@@ -16,123 +16,156 @@ categories:
 
 > Rxjava其实在很早以前有过学习和了解，但是当时由于没有记笔记的习惯，难以整理成体系化的笔记，零零散散。
 
+> 本系列笔记学习基于`io.reactivex.rxjava3:rxjava:3.1.6`
+
 
 
 ## 概念
 
 
 
+### RP
+
+
+
+> RP即`Reactive Programming`(响应式编程)
+
+
+
+>  所谓的响应式即变化是可传播的，即发生变化后这种变化会如同”病毒“一样扩散出去。
+
+
+
+> 假如计算一个式子
+>
+> c = a + b
+>
+> 命令式和响应式写法如下
+
+
+
+> None RP
+
+```java
+public class NoneRP {
+
+    public static void main(String[] args) {
+        int a = 1;
+        int b = 2;
+
+        int c = a + b;
+		// 3
+        System.out.println(c);
+
+        a = 2;
+        b = 3;
+		// 由于逻辑处理没有采用响应式，所以a b的变化不会扩散到c，即abc的值互相独立，互不影响。
+        System.out.println(c);
+
+    }
+
+}
+```
+
+
+
+> RP
+
+```java
+public class RP {
+
+
+    public static void main(String[] args) {
+        ObservableInt a = new ObservableInt(1);
+        ObservableInt b = new ObservableInt(2);
+
+        int[] c = {0};
+		// 观察a的变化
+        a.observer((oldV, newV) -> {
+            c[0] += newV - oldV;
+        });
+		// 观察b的变化
+        b.observer((oldV,newV)->{
+            c[0] += newV - oldV;
+        });
+		// 3
+        System.out.println(c[0]);
+		// 修改a的值，由于采用了响应式的编程范式，a，b的变动会传播到c
+        a.setV(2);
+        // 4
+        System.out.println(c[0]);
+
+        b.setV(3);
+        // 5
+        System.out.println(c[0]);
+
+
+
+
+    }
+
+}
+
+// 可观测的int值
+class ObservableInt {
+
+    private int v;
+
+    private OnIntChange observer;
+
+    public ObservableInt(int v) {
+        this.v = v;
+    }
+
+    public int getV() {
+        return v;
+    }
+
+    public void setV(int v) {
+        observer.change(this.v, v);
+        this.v = v;
+    }
+
+    public void observer(OnIntChange observer) {
+        this.observer = observer;
+        observer.change(0,v);
+    }
+
+}
+
+// 观察监听
+interface OnIntChange {
+    void change(int from, int to);
+}
+```
+
+
+
 ### RX
 
-RX是什么意思
+*RX是什么意思？*
 
 
 
-> Reactive Extensions即响应式扩展，所谓的响应式的核心既是设计模式中的观察者模式。
+> RX（ReactiveX或Reactive Extensions）即响应式扩展，即用于实现响应式编程的框架
+
+
+
+> 响应式的核心是设计模式中的观察者模式。
 
 > 除此之外还切分了**上下游关系**，下游**观察**上游，上游向下游**发送事件**
 
 
 
-> 很不直观？没能理解他带来的便利？
+> R是一种**思想**即上文所述RP
 
-> 那来对比一下写法
-
-
-
-> 假如你想完成一个**异步任务**，很容易想到需要接口回调。（异步任务在多线程编程中普遍存在）
-
-> 抽象如下（很简陋）
-
-```java
-// 任务实体
-interface Task {
-    void start();
-
-    void start(TaskListener listener);
-}
-// 任务完成监听
-interface TaskListener {
-    void onFinished();
-}
-```
-
-
-
-> 假如有3个Task需要依照如下顺序完成。TaskA -> TaskB -> TaskC
-
-```java
-class TaskA implements Task {
-    //......
-}
-
-class TaskB implements Task {
-    //......
-}
-
-class TaskC implements Task {
-    //......
-}
-```
-
-
-
-> none-Reactive
-
-```java
-public class Test {
-
-    public static void main(String[] args) {
-
-        Task taskA;
-        Task taskB;
-        Task taskC;
-        // 初始化...
-        init();
-        // 开启任务
-        taskA.start(new TaskListener() {
-            @Override
-            public void onFinished() {
-                taskB.start(new TaskListener() {
-                    @Override
-                    public void onFinished() {
-                        taskC.start(new TaskListener() {
-                            @Override
-                            public void onFinished() {
-								// finished all tasks
-                            }
-                        });
-                    }
-                });
-            }
-        });
-
-    }
-
-}
-```
-
-
-
-> Reactive (伪代码)
-
-```java
-taskA.toObserver()
-    .map {
-    	taskB.start()
-	}
-	.map {
-        taskC.start()
-    }
-```
-
-
-
-
-
-> R是一种思想
-
-> RX是Reactive的一种实现
+> RX是实现响应式的一种**框架**
+>
+> 是一个用于解决**异步事件**的编程库
+>
+> 它使用了**观察者模式**，并且有很多的**操作符**可以以声明式的方式将不同的流组合在一起。
+>
+> 同时他封装了**线程**，**同步**，**线程安全**，**并发容器**，**非阻塞式IO**
 
 
 
@@ -140,15 +173,25 @@ taskA.toObserver()
 
 
 
-> ReactiveX是一个用于解决异步事件的编程库
+> Rxjava是ReactiveX对于指定编程语言的实现
 
-> 它使用了观察者模式，并且有很多的操作符可以以声明式的方式将不同的流组合在一起。
+类似的还有
 
-> 同时他封装了线程，同步，线程安全，并发容器，非阻塞式IO
+- RxJs
+- Rx.NET
+- RxScala
+- RxClojure
+- RxSwift
+- RxCpp
+- RxLua
+- Rx.rb
+- RxPY
+
+......
 
 
 
-### Why Rxjava
+## Why Rxjava
 
 - callback存在问题
 
@@ -216,3 +259,145 @@ Rxjava经历了3个版本的变动
 
 
 
+## RxJava项目结构结构
+
+
+
+### 项目依赖
+
+![image-20230310220820058](https://typora-blog-picture.oss-cn-chengdu.aliyuncs.com/blog/image-20230310220820058.png)
+
+
+
+
+
+> [reactive stream](https://github.com/reactive-streams/reactive-streams-jvm)
+>
+> The purpose of Reactive Streams is to provide a standard for asynchronous stream processing with non-blocking backpressure.
+>
+> Reactive Streams的目的在于提供**非阻塞**式**背压** **异步流**处理的标准
+
+
+
+> 所谓标准既是一套抽象。（说人话就是一套接口）
+
+![image-20230310221343995](https://typora-blog-picture.oss-cn-chengdu.aliyuncs.com/blog/image-20230310221343995.png)
+
+
+
+
+
+### 项目公共API
+
+> 即除internal包外的所有包
+
+```java
+module io.reactivex.rxjava3 {
+    requires org.reactivestreams;
+	// 一些注解，标注代码功能
+    exports io.reactivex.rxjava3.annotations;
+    // 核心包 包含如下抽象
+    // Completable Flowable Maybe Observable Scheduler Single
+    exports io.reactivex.rxjava3.core;
+    // 包含各类disposable
+    exports io.reactivex.rxjava3.disposables;
+    // 异常
+    exports io.reactivex.rxjava3.exceptions;
+    // flowable
+    exports io.reactivex.rxjava3.flowables;
+    // 函数式接口
+    exports io.reactivex.rxjava3.functions;
+    // observable子类
+    exports io.reactivex.rxjava3.observables;
+    // 观察者
+    exports io.reactivex.rxjava3.observers;
+    // 操作符
+    exports io.reactivex.rxjava3.operators;
+    // 并行
+    exports io.reactivex.rxjava3.parallel;
+    // 插件
+    exports io.reactivex.rxjava3.plugins;
+    // Processor（reactive stream中的规范）
+    exports io.reactivex.rxjava3.processors;
+    // 调度器实现
+    exports io.reactivex.rxjava3.schedulers;
+    // subject
+    exports io.reactivex.rxjava3.subjects;
+    // subscriber（reactive stream中的规范）
+    exports io.reactivex.rxjava3.subscribers;
+}
+```
+
+
+
+![image-20230310221552417](https://typora-blog-picture.oss-cn-chengdu.aliyuncs.com/blog/image-20230310221552417.png)
+
+
+
+
+
+### 抽象
+
+![image-20230311111903622](https://typora-blog-picture.oss-cn-chengdu.aliyuncs.com/blog/image-20230311111903622.png)
+
+> `Maybe`，`Observable`，`Single`，`Completable`的结构类似均包含如下抽象
+>
+> - XXXSource
+>
+>   可观测的数据源，通常是XXX的抽象，比如ObservableSource是Observable的抽象
+>
+> - XXXObserver
+>
+>   订阅关系中，下游需要在subscribe过程向上游传输观察者
+>
+> - XXXEmitter
+>
+>   订阅关系在，上游需要向下游发送事件，而这一部分内容由上游的Emitter实现
+>
+> - XXXOnSubscribe
+>
+>   订阅关系中的最上游。
+>
+> - XXXOperator
+>
+>   对**下游**的**observer**进行包裹hook。（`lift`操作符）
+>
+> - XXXTransformer
+>
+>   对**上游**的**数据源**进行转换（`compose`操作符）
+>
+> - XXXConverter
+>
+>   转换器，将数据源进行转换。（`to`操作符）
+
+
+
+> `Flowable`支持背压（即实现了reactive stream规范），所以结构上有一定的差异
+>
+> - Publisher
+>
+>   同XXXSource，是Flowable的抽象
+>
+> - FlowSubscriber
+>
+>   同Observer是一个订阅者，需要在订阅过程中向上游传输。
+>
+> - FlowEmitter
+>
+> - FlowOnSubscribe
+>
+> - FlowOperator
+>
+> - FlowTransformer
+>
+> - FlowConverter
+
+
+
+## 参考
+
+
+
+- [Rxjava introduction](https://reactivex.io/intro.html)
+
+- [Rxjava 中文版文档](https://mcxiaoke.gitbooks.io/rxdocs/content/)
