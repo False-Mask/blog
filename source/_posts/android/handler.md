@@ -1,5 +1,6 @@
 ---
 title: Android线程通信
+date: 2023-03-03 21:07:06
 tags:
 - android
 - 操作系统
