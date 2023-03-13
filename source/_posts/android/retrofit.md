@@ -86,7 +86,7 @@ retrofit的基本使用很简单，
 
 如下
 
-![](https://gitee.com/False_Mask/pics/raw/master/PicsAndGifs/20220217195534.png)
+![](https://typora-blog-picture.oss-cn-chengdu.aliyuncs.com/PicsAndGifs/20220217195534.png)
 
 ```kotlin
 private val retrofit: Retrofit = Retrofit.Builder()
@@ -102,7 +102,7 @@ private val retrofit: Retrofit = Retrofit.Builder()
 
 Build内部的方法也就是为了修改retrofit的一些成员变量
 
-<img src="https://gitee.com/False_Mask/pics/raw/master/PicsAndGifs/20220217200538.png" title="" alt="" data-align="center">
+<img src="https://typora-blog-picture.oss-cn-chengdu.aliyuncs.com/PicsAndGifs/20220217200538.png" title="" alt="" data-align="center">
 
 build的时候直接new了一个Retrofit回去。
 
@@ -295,7 +295,7 @@ public static Object newProxyInstance(ClassLoader loader,
     }
 ```
 
-![](https://gitee.com/False_Mask/pics/raw/master/PicsAndGifs/20220218095103.png)
+![](https://typora-blog-picture.oss-cn-chengdu.aliyuncs.com/PicsAndGifs/20220218095103.png)
 
 这就是对应的生成的代理类。
 
@@ -303,11 +303,11 @@ public static Object newProxyInstance(ClassLoader loader,
 
 进入getConstructor以后他会进行判断。接口到底有几个
 
-![](https://gitee.com/False_Mask/pics/raw/master/PicsAndGifs/20220218095251.png)
+![](https://typora-blog-picture.oss-cn-chengdu.aliyuncs.com/PicsAndGifs/20220218095251.png)
 
 这里显然只有一个，所以会执行以下代码
 
-![](https://gitee.com/False_Mask/pics/raw/master/PicsAndGifs/20220218095410.png)
+![](https://typora-blog-picture.oss-cn-chengdu.aliyuncs.com/PicsAndGifs/20220218095410.png)
 
 实际重要的也就是一行
 
@@ -444,7 +444,7 @@ mappingFunction.apply(cl, clv));
 
 点看以后豁然开朗
 
-![](https://gitee.com/False_Mask/pics/raw/master/PicsAndGifs/20220218100552.png)
+![](https://typora-blog-picture.oss-cn-chengdu.aliyuncs.com/PicsAndGifs/20220218100552.png)
 
 new Build的时候初始化了一些配置，这里不提。
 
@@ -460,15 +460,15 @@ build先后电泳了
 
 defineProxyClass的前半段也就定义了动态代理的类名，包名，修饰符的信息，还没完成对于类的字节码文件的生成。
 
-![](https://gitee.com/False_Mask/pics/raw/master/PicsAndGifs/20220218101109.png)
+![](https://typora-blog-picture.oss-cn-chengdu.aliyuncs.com/PicsAndGifs/20220218101109.png)
 
 后半页的核心代码露头了
 
-![](https://gitee.com/False_Mask/pics/raw/master/PicsAndGifs/20220218101604.png)
+![](https://typora-blog-picture.oss-cn-chengdu.aliyuncs.com/PicsAndGifs/20220218101604.png)
 
 我们来分析以下这个Generator
 
-![](https://gitee.com/False_Mask/pics/raw/master/PicsAndGifs/20220218104155.png)
+![](https://typora-blog-picture.oss-cn-chengdu.aliyuncs.com/PicsAndGifs/20220218104155.png)
 
 ClassWriter嗯有点意思一看包名
 
@@ -542,7 +542,7 @@ final byte[] classFile = gen.generateClassFile();
   
   这方法行吗？太行了只不过呢byte数组有点大而且操作起来有点点复杂。
 
-![](https://gitee.com/False_Mask/pics/raw/master/PicsAndGifs/20220218104638.png)
+![](https://typora-blog-picture.oss-cn-chengdu.aliyuncs.com/PicsAndGifs/20220218104638.png)
 
 - way2
   
@@ -566,11 +566,11 @@ private static final boolean saveGeneratedFiles =
 
 如果在我们的代码里面加上这一行,再重新run代码的时候class就会保存为一个文件
 
-![](https://gitee.com/False_Mask/pics/raw/master/PicsAndGifs/20220218105234.png)
+![](https://typora-blog-picture.oss-cn-chengdu.aliyuncs.com/PicsAndGifs/20220218105234.png)
 
 这就是动态生成代理类的具体内容，代码比较短。
 
-![](https://gitee.com/False_Mask/pics/raw/master/PicsAndGifs/20220218105318.png)
+![](https://typora-blog-picture.oss-cn-chengdu.aliyuncs.com/PicsAndGifs/20220218105318.png)
 
 好了以上就是动态代理动态生成代理类字节码并获取其构造函数的全过程。
 
@@ -726,7 +726,7 @@ public final int hashCode() {
 
 所以上述的所以方法都是通过调用这个方法实现的。
 
-![](https://gitee.com/False_Mask/pics/raw/master/PicsAndGifs/20220218134439.png)
+![](https://typora-blog-picture.oss-cn-chengdu.aliyuncs.com/PicsAndGifs/20220218134439.png)
 
 ##### 小结
 
@@ -748,7 +748,7 @@ public final int hashCode() {
 
 运行时候生成了$$Proxy对象返回才有了比较弱的耦合关系。
 
-![](https://gitee.com/False_Mask/pics/raw/master/PicsAndGifs/动态代理.drawio.png)
+![](https://typora-blog-picture.oss-cn-chengdu.aliyuncs.com/PicsAndGifs/动态代理.drawio.png)
 
 ## Retrofit继续分析
 
@@ -855,7 +855,7 @@ Retrofit对Dalvik平台有特殊的处理(也就是Android)
 
 Platform内容如下
 
-![](https://gitee.com/False_Mask/pics/raw/master/PicsAndGifs/20220218143456.png)
+![](https://typora-blog-picture.oss-cn-chengdu.aliyuncs.com/PicsAndGifs/20220218143456.png)
 
 ###### emptyArgs
 
@@ -952,7 +952,7 @@ if (method.getDeclaringClass() == Object.class) {
   > 
   > 然后进一步进行解析
   
-  > ![](https://gitee.com/False_Mask/pics/raw/master/PicsAndGifs/20220218165134.png)
+  > ![](https://typora-blog-picture.oss-cn-chengdu.aliyuncs.com/PicsAndGifs/20220218165134.png)
   > 
   > 最后返回了一个CallAdapted 
   > 

@@ -31,7 +31,7 @@ ensureNotNullAndEmpty已经确定了str不为空，也不为""
 
 但是使用的时候编译器还是认为这个东西可能是空的。
 
-![image-20211204155346628](https://gitee.com/False_Mask/pics/raw/master/PicsAndGifs/image-20211204155346628.png)
+![image-20211204155346628](https://typora-blog-picture.oss-cn-chengdu.aliyuncs.com//PicsAndGifs/image-20211204155346628.png)
 
 
 
@@ -57,7 +57,7 @@ fun String?.ensureNotNullAndEmpty(): Boolean {
 
 这样就不报错了
 
-![image-20211204155911729](https://gitee.com/False_Mask/pics/raw/master/PicsAndGifs/image-20211204155911729.png)
+![image-20211204155911729](https://typora-blog-picture.oss-cn-chengdu.aliyuncs.com//PicsAndGifs/image-20211204155911729.png)
 
 
 
@@ -107,7 +107,7 @@ fun main() {
 
 如果去除这个contract你会发现报错了。
 
-![image-20211204164002321](https://gitee.com/False_Mask/pics/raw/master/PicsAndGifs/image-20211204164002321.png)
+![image-20211204164002321](https://typora-blog-picture.oss-cn-chengdu.aliyuncs.com//PicsAndGifs/image-20211204164002321.png)
 
 
 
@@ -182,7 +182,7 @@ run一下
 
 再改一下
 
-![image-20211204165103495](https://gitee.com/False_Mask/pics/raw/master/PicsAndGifs/image-20211204165103495.png)
+![image-20211204165103495](https://typora-blog-picture.oss-cn-chengdu.aliyuncs.com//PicsAndGifs/image-20211204165103495.png)
 
 
 

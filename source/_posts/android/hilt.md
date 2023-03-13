@@ -128,7 +128,7 @@ categories:
 
 但是注入这些类其实也是由一定的限制的
 
-![image-20210816175056607](https://gitee.com/False_Mask/pics/raw/master/PicsAndGifs/image-20210816175056607.png)
+![image-20210816175056607](https://typora-blog-picture.oss-cn-chengdu.aliyuncs.com/PicsAndGifs/image-20210816175056607.png)
 
 我们如果使用@AndroidEntryPoint注解，我们还得对它依赖的Android组件加上注解。
 
@@ -146,15 +146,15 @@ categories:
 
 这个retained fragments其实也是fragment只不过做了一个设置
 
-![image-20210816175806412](https://gitee.com/False_Mask/pics/raw/master/PicsAndGifs/image-20210816175806412.png)
+![image-20210816175806412](https://typora-blog-picture.oss-cn-chengdu.aliyuncs.com/PicsAndGifs/image-20210816175806412.png)
 
-![image-20210816175829394](https://gitee.com/False_Mask/pics/raw/master/PicsAndGifs/image-20210816175829394.png)
+![image-20210816175829394](https://typora-blog-picture.oss-cn-chengdu.aliyuncs.com/PicsAndGifs/image-20210816175829394.png)
 
 Control whether **a fragment instance is retained across Activity re-creation** (**such as from a configuration change**). If set, the fragment lifecycle will be slightly different when an activity is recreated:
 
 不过这个Fragment方法已经被遗弃鸟，由于它的生命周期发生了细微的变化。
 
-![image-20210816180030865](https://gitee.com/False_Mask/pics/raw/master/PicsAndGifs/image-20210816180030865.png)
+![image-20210816180030865](https://typora-blog-picture.oss-cn-chengdu.aliyuncs.com/PicsAndGifs/image-20210816180030865.png)
 
 推荐使用ViewModel替换
 
