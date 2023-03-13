@@ -100,7 +100,7 @@ public interface List<out E> : Collection<E>
 
 类关系图
 
-![Collection interfaces hierarchy](https://gitee.com/False_Mask/pics/raw/master/PicsAndGifs/collections-diagram.png)
+![Collection interfaces hierarchy](https://typora-blog-picture.oss-cn-chengdu.aliyuncs.com/PicsAndGifs/collections-diagram.png)
 
 小结
 

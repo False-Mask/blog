@@ -1,6 +1,6 @@
 ---
 title: Kotlin泛型
-date: 2021-12-21 9:35:32
+date: 2022-07-30 9:35:32
 tags:
 - kotlin
 categories:
@@ -9,171 +9,370 @@ categories:
 
 
 
-
-
 # 泛型
 
-kotlin的类和java一样有类型参数（也就是泛型）
+- 泛型又叫参数化类型,可以理解是一种类型参数(一种表征类型的参数类型)
+- 泛型**主要**起到的是规范作用,其行为主要是在编译期报错来避免一些潜在的类型安全问题
+- kotlin泛型按种类可分为以下3类
+  - 函数泛型
+  - 类泛型
+  - 接口泛型
+  - 真泛型类型reified
+
+## 函数泛型
+
+### 作为函数参数传入
+
 
 ```kotlin
-class Box<T>(t: T) {
-    var value = t
+fun <T> get(t: T) {
+    println(t.toString())
 }
 ```
 
-创建一个含有类型参数的对象很简单，申明即可。
+字节码如下
+
+```
+ public final static get(Ljava/lang/Object;)V      
+    #这也就是著名的类型擦除,泛型类型最后会被会被编译成Object而没有真正生成具体的类
+    // annotable parameter count: 1 (visible)
+    // annotable parameter count: 1 (invisible)
+   L0
+    LINENUMBER 8 L0    #源代码行号
+    ALOAD 0            #局部变量表0位置的引用类型存入操作数栈
+    INVOKESTATIC java/lang/String.valueOf (Ljava/lang/Object;)Ljava/lang/String;
+    #调用静态方法String.valueOf()
+    ASTORE 1           #调用结果存入局部变量表index为1的位置
+   L1
+    #熟悉的sout
+    GETSTATIC java/lang/System.out : Ljava/io/PrintStream;
+    ALOAD 1
+    INVOKEVIRTUAL java/io/PrintStream.println (Ljava/lang/Object;)V
+   L2
+   L3
+    LINENUMBER 9 L3
+    RETURN              #return
+   L4
+    LOCALVARIABLE t Ljava/lang/Object; L0 L4 0  #局部变量表
+    MAXSTACK = 2
+    MAXLOCALS = 2
+```
+
+可以发现如果泛型作为函数的参数是没有任何的运行时提示的.
+
+等价
 
 ```kotlin
-val box: Box<Int> = Box<Int>(1)
+fun get(t:Any){
+    println(t)
+}
+
 ```
 
+### 作为函数的返回值
 
 
-## variance(变化)
-
-变化分为几种。
-
-- 协变
-- 逆变
-- 不变
-
-
-
->  f(x)是**逆变（contravariant）**的，当A≤B时有f(B)≤f(A)成立；
->  f(x)是**协变（covariant）**的，当A≤B时有f(A)≤f(B)成立；
->  f(x)是**不变（invariant）**的，当A≤B时上述两个式子均不成立，即f(A)与f(B)相互之间没有继承关系。
-
-其实协变和逆变的概念不是Java中的概念，他其实是数学中的概念。
-
-在Kotlin里面。
-
-逆变是泛型类型的父类不是发现类型的父类
-
-如：Contravariant<Object>不是Contravariant<Number>的父类
-
-协变即相反，泛型类型的父类是泛型类型的子类的父类。
-
-如：Covariant<Object>是Covariant<Number>的父类
-
-
-
-> generic types in Java are *invariant*, meaning that `List<String>` is *not* a subtype of `List<Object>`
-
-```java
-// Java
-List<String> strs = new ArrayList<String>();
-List<Object> objs = strs; // !!! A compile-time error here saves us from a runtime exception later.
-objs.add(1); // Put an Integer into a list of Strings
-String s = strs.get(0); // !!! ClassCastException: Cannot cast Integer to String
+```kotlin
+fun <T> set(any: Any): T {
+    return any as T
+}
 ```
 
-会报错
-
-> Required type: List
->
-> Provided:List
-
-但是这样是不会报错的。
-
-```java
-Collection<Object> objs =  new ArrayList<>();
-Collection<String> strs = new ArrayList<>();
-objs.addAll(strs);
+```
+ public final static set(Ljava/lang/Object;)Ljava/lang/Object;
+    #依然类型擦除,返回值直接被替换为了obj
+    // annotable parameter count: 1 (visible)
+    // annotable parameter count: 1 (invisible)
+    @Lorg/jetbrains/annotations/NotNull;() // invisible, parameter 0
+   L0
+    ALOAD 0     #局部变量入栈(方法参数)
+    LDC "any"   #常量池any常量入栈
+    INVOKESTATIC kotlin/jvm/internal/Intrinsics.checkNotNullParameter (Ljava/lang/Object;Ljava/lang/String;)V
+    #类型检测(定义的时候使用的kotlin的不可空类型,所以生成了check)
+   L1
+    LINENUMBER 12 L1
+    ALOAD 0     #invokestatic消耗了栈顶两个元素,目前栈顶为空,继续压入set方法的方法参数
+    ARETURN     #直接return
+   L2
+    LOCALVARIABLE any Ljava/lang/Object; L0 L2 0
+    MAXSTACK = 2
+    MAXLOCALS = 1
 ```
 
-因为addAll这个方法有些特殊
+有些惊讶,显式地调用as进行类型强制,但是这个as只确保了编译通过,没有生成任何额外地字节码
 
-```java
-boolean addAll(Collection<? extends E> c);
+函数等价于
+
+```kotlin
+fun a(any:Any):Any = any
 ```
 
-它加入了协变的支持所以可以直接赋值
+### 类型限定
 
-
-
-## covariance 协变
-
-协变就是子类泛型可以赋值给父类泛型
-
-由于前面说的**Java是不可变的**。所以要实现子类泛型可以赋值给父类泛型，只能通过语言提供的通配符。
-
-```java
-public class Covariance {
-    public static void main(String[] args) {
-        List<Integer> ints = new ArrayList<>();
-        invariance(ints);//报错类型不匹配
+```kotlin
+class A {
+    fun sayHello() {
+        println("Hello I am A")
     }
+}
 
-    private static void invariance(List<Number> nums) {
-        Number number = nums.get(0);//正常
-        nums.add(1);//正常
+fun <T : A> constrains1(t: T) {
+    t.sayHello()
+}
+
+fun <T : A> constrains2(obj: Any): T {
+    return obj as T
+}
+```
+
+constrain1分析
+
+```
+public final static constrains1(LA;)V
+    #说这是类型擦除吧也是,但是呢你说他不是好像确实也不是.
+    #总共不是obj了
+    // annotable parameter count: 1 (visible)
+    // annotable parameter count: 1 (invisible)
+    @Lorg/jetbrains/annotations/NotNull;() // invisible, parameter 0
+   L0
+   #等价Intrinsics.checkNotNullParameter(t);
+    ALOAD 0
+    LDC "t"
+    INVOKESTATIC kotlin/jvm/internal/Intrinsics.checkNotNullParameter (Ljava/lang/Object;Ljava/lang/String;)V
+   L1
+    LINENUMBER 22 L1
+    #等价于t.sayHello()
+    ALOAD 0
+    INVOKEVIRTUAL A.sayHello ()V
+   L2
+    LINENUMBER 23 L2
+    RETURN
+   L3
+    LOCALVARIABLE t LA; L0 L3 0
+    MAXSTACK = 2
+    MAXLOCALS = 1
+```
+
+可以发现加入了类型限定以后类型擦除不是obj,而是限定的那个类
+
+
+constraint2分析
+
+```
+public final static constrains2(Ljava/lang/Object;)LA;
+  @Lorg/jetbrains/annotations/NotNull;() // invisible
+    // annotable parameter count: 1 (visible)
+    // annotable parameter count: 1 (invisible)
+    @Lorg/jetbrains/annotations/NotNull;() // invisible, parameter 0
+   L0
+    ALOAD 0
+    LDC "obj"
+    INVOKESTATIC kotlin/jvm/internal/Intrinsics.checkNotNullParameter (Ljava/lang/Object;Ljava/lang/String;)V
+   L1
+    LINENUMBER 26 L1
+    ALOAD 0
+   L2
+    CHECKCAST A       #与前面的类似只是多了一条cast指令
+    ARETURN
+   L3
+    LOCALVARIABLE obj Ljava/lang/Object; L0 L3 0
+    MAXSTACK = 2
+    MAXLOCALS = 1
+```
+
+### 小结
+
+- 对于函数泛型如果没有类型限制那么最后会被擦除为Object
+- 如果有类型限制,那么就会将类型擦除为限制的类型,这时候就会生成cast指令,不留神就会报ClassCastException
+
+
+## 类泛型
+
+```kotlin
+class B<T>(val t: T)
+```
+
+```
+public final class B {
+
+  private final Ljava/lang/Object; t  #类型擦除为了Object,后续的也没必要看了一个样
+
+  public final getT()Ljava/lang/Object;
+   L0
+    LINENUMBER 30 L0
+    ALOAD 0
+    GETFIELD B.t : Ljava/lang/Object;
+    ARETURN
+
+  public <init>(Ljava/lang/Object;)V
+   L0
+    LINENUMBER 30 L0
+    ALOAD 0
+    INVOKESPECIAL java/lang/Object.<init> ()V
+    ALOAD 0
+    ALOAD 1
+    PUTFIELD B.t : Ljava/lang/Object;
+    RETURN
+}
+```
+
+### in,out
+
+```kotlin
+class A {
+  fun sayHello() {
+    println("Hello I am A")
+  }
+}
+
+class C<in Generics : A> {
+  private var value: Generics? = null
+
+  fun a(a: A) {
+    a.sayHello()
+    this.value = a as Generics
+  }
+}
+
+```
+
+```
+public final class C {
+
+
+  // access flags 0x2
+  // signature TGenerics;
+  // declaration: value extends Generics
+  #合理的,由于加入了类型的限定,所以类型绑定为了A
+  private LA; value
+
+   L0
+    #判空
+    #局部变量表0为this,1为a方法的参数
+    ALOAD 1
+    LDC "a"
+    INVOKESTATIC kotlin/jvm/internal/Intrinsics.checkNotNullParameter (Ljava/lang/Object;Ljava/lang/String;)V
+   L1
+    LINENUMBER 37 L1
+    #等价于a.sayHello()
+    ALOAD 1
+    INVOKEVIRTUAL A.sayHello ()V
+   L2
+    LINENUMBER 38 L2
+    #压入局部变量this和a
+    ALOAD 0
+    ALOAD 1
+   L3
+    #设置成员变量
+    PUTFIELD C.value : LA;
+   L4
+    LINENUMBER 39 L4
+    RETURN
+   L5
+    LOCALVARIABLE this LC; L0 L5 0
+    LOCALVARIABLE a LA; L0 L5 1
+    MAXSTACK = 2
+    MAXLOCALS = 2
+}
+```
+
+可以发现in关键字其实只是编译期间不允许你返回带有对应泛型的返回值,没有新增加任何指令.
+
+类似的out只是不允许你定义任何带有该泛型类型参数的方法
+
+```kotlin
+class D<out Generics : A> {
+    private var value: Generics? = null
+
+    fun getV(): Generics? {
+        return value
     }
 }
 ```
 
-下界通配符可以让原本不变的对象具备协变的能力。
 
-但是加入了一个限制你不能调用任何含有泛型参数的方法。简单来说就是不能修改，但是你可以调用含有泛型类型参数返回值的方法。
+## 接口泛型
 
-```java
-public class Covariance {
-    public static void main(String[] args) {
-        List<Integer> ints = new ArrayList<>();
-        covariance(ints);
-    }
 
-    private static void covariance(List<? extends Number> nums) {
-        Number number = nums.get(0);//正常
-        nums.add(1);//报错
-    }
+```kotlin
+interface GenericsInterface<A> {
+    fun m(a: A):A
 }
 ```
 
-### 为何加入限制
+字节码分析
 
-因为不加限制会导致类型不安全。
-
-```java
-private static void whyConstraint() {
-    List<Integer> integers = new ArrayList<>();
-    List<? extends Object> objs = integers;
-    objs.add("");//如果不做限制
-    Integer integer = integers.get(0);
+```
+public abstract interface GenericsInterface {
+  # 依然是类型擦除
+  public abstract m(Ljava/lang/Object;)Ljava/lang/Object;
 }
 ```
 
-如果不加限制objs.add不报错。
-
-那么我们就可以向integers中添加一个String，很恐怖的。这样只要使用integers.get()就会在运行的时候报错，ClassCastException。Java一个强类型的语言竟然会出现类型不安全，这开什么国际玩笑。所以为了避免这种情况，强加限制如果加入协变，不允许调用含有泛型类型参数的方法。也就是不允许修改。
+类似的in/out 类型限定的实现原理和上述实现类似。不做赘述。
 
 
+## reified
 
-## Contravariant
-
-再次强调Java类型是不可变的
-
-假如我有这样的需求把父类泛型对象赋值给子类。有点向下转型的味道了。这里显然会报错的，因为Java类型不可变。
+reified是需要借助inline它是泛型,but它的实现是依靠的inline.
+reified = generics + inline
 
 
+```kotlin
+inline fun <reified A> reifiedGenerics(a: A) {
+  println(a)
+  println(A::class.java)
+}
 
-你可能会问，为什么会有这样的需求，父类对象给子类这显然是不太合理的啊。
-
-如果父类只是容器呢？换句话来说。我new ArrayList<Integer>,然后通过addAll把元素添加到ArrayList<Number>里面，这样ArrayList<Number>里面的元素都是Integer，我们直接使用是没问题的。
-
-又或者说这个ArrayList<Integer>它只是一个中转站而已呢。
-
-```java
-public class Contravariant {
-    public static void main(String[] args) {
-        List<Integer> list = Arrays.asList(1, 2, 3, 4, 5, 6, 7, 8);
-        
-        List<Number> numbers = new ArrayList<>(list);
-        invariance(numbers);//报错
-    }
-
-    private static void invariance(List<Integer> integers) {
-        integers.add(1);
-        integers.get(0);
-    }
+fun main() {
+  reifiedGenerics<String>("")
 }
 ```
+
+当你去分析reifiedGenerics来了解reified的实现的时候.
+你就走错路了.
+因为他是inline,而且强制绑定inline
+它的实现你得去调用处进行分析.
+
+```
+public final static main()V
+   L0
+    LINENUMBER 74 L0
+    LDC ""
+    ASTORE 0
+   L1
+    ICONST_0
+    ISTORE 1
+   L2
+    LINENUMBER 80 L2
+   L3
+    GETSTATIC java/lang/System.out : Ljava/io/PrintStream;
+    ALOAD 0
+    INVOKEVIRTUAL java/io/PrintStream.println (Ljava/lang/Object;)V
+   L4
+   L5
+    LINENUMBER 81 L5
+    LDC Ljava/lang/String;.class        #class常量入栈
+    ASTORE 2
+   L6
+    GETSTATIC java/lang/System.out : Ljava/io/PrintStream;
+    ALOAD 2
+    INVOKEVIRTUAL java/io/PrintStream.println (Ljava/lang/Object;)V
+   L7
+   L8
+    LINENUMBER 82 L8
+    NOP
+   L9
+    LINENUMBER 75 L9
+    RETURN
+```
+
+代码等价于
+
+```kotlin
+fun main(){
+    println("")
+    println(String::class.java)
+}
+```
+
