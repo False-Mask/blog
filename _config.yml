@@ -6,11 +6,7 @@
 title: 知识加油站
 subtitle: 
 description: '分享知识,个人成长'
-keywords:
-- 涂智蔷
-- 个人博客
-- Java
-- Android
+keywords: 涂智蔷,个人博客,Java,Android
 author: 涂智蔷
 language: zh-CN
 timezone: 'Asia/Shanghai'
@@ -18,8 +14,8 @@ email: 2623036785@qq.com
 
 # URL
 ## Set your site url here. For example, if you use GitHub Page, set url as 'https://username.github.io/project'
-url: http://8.130.23.81/
-permalink: :year/:month/:day/:title/
+url: http://blog.tuzhiqiang.top/
+permalink: :title/
 permalink_defaults:
 pretty_urls:
   trailing_index: true # Set to false to remove trailing 'index.html' from permalinks
