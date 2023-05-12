@@ -163,3 +163,78 @@ public static void run(String mainClassName, String[] args) {
 
 
 
+```java
+public void start() {
+    LOGGER.info("start() called on daemon - {}", daemonContext);
+    lifecycleLock.lock();
+    try {
+        if (stateCoordinator != null) {
+            throw new IllegalStateException("cannot start daemon as it is already running");
+        }
+
+        // Generate an authentication token, which must be provided by the client in any requests it makes
+        SecureRandom secureRandom = new SecureRandom();
+        byte[] token = new byte[16];
+        secureRandom.nextBytes(token);
+
+        registryUpdater = new DaemonRegistryUpdater(daemonRegistry, daemonContext, token);
+
+        ShutdownHooks.addShutdownHook(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    daemonRegistry.remove(connectorAddress);
+                } catch (Exception e) {
+                    LOGGER.debug("VM shutdown hook was unable to remove the daemon address from the registry. It will be cleaned up later.", e);
+                }
+            }
+        });
+
+        Runnable onStartCommand = new Runnable() {
+            @Override
+            public void run() {
+                registryUpdater.onStartActivity();
+            }
+        };
+
+        Runnable onFinishCommand = new Runnable() {
+            @Override
+            public void run() {
+                registryUpdater.onCompleteActivity();
+            }
+        };
+
+        Runnable onCancelCommand = new Runnable() {
+            @Override
+            public void run() {
+                registryUpdater.onCancel();
+            }
+        };
+
+        // Start the pipeline in reverse order:
+        // 1. mark daemon as running
+        // 2. start handling incoming commands
+        // 3. start accepting incoming connections
+        // 4. advertise presence in registry
+
+        stateCoordinator = new DaemonStateCoordinator(executorFactory, onStartCommand, onFinishCommand, onCancelCommand);
+        connectionHandler = new DefaultIncomingConnectionHandler(commandExecuter, daemonContext, stateCoordinator, executorFactory, token);
+        Runnable connectionErrorHandler = new Runnable() {
+            @Override
+            public void run() {
+                stateCoordinator.stop();
+            }
+        };
+        connectorAddress = connector.start(connectionHandler, connectionErrorHandler);
+        LOGGER.debug("Daemon starting at: {}, with address: {}", new Date(), connectorAddress);
+        registryUpdater.onStart(connectorAddress);
+    } finally {
+        lifecycleLock.unlock();
+    }
+
+    LOGGER.lifecycle(DaemonMessages.PROCESS_STARTED);
+}
+```
+
+
+
