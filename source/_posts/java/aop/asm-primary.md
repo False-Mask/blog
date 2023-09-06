@@ -1,5 +1,5 @@
 ---
-title: asm-primary
+title: ASM基础使用
 date: 2023-07-20 23:44:34
 tags:
 - asm
@@ -1063,63 +1063,155 @@ override fun visitLookupSwitchInsn(
 
 #### visitMultiANewArrayInsn
 
+> 访问多维数组指令MULTIANEWARRAY指令
 
-
-
+```kotlin
+override fun visitMultiANewArrayInsn(
+    descriptor: String?, // 描述符
+    numDimensions: Int   // 维度数
+)
+```
 
 
 
 #### visitInsnAnnotation
 
+> 访问annotation指令
 
+> 如下
 
+```java
+VisitInsnAnnotationTest i = new @AnnotationTest VisitInsnAnnotationTest();
+```
 
+```kotlin
+override fun visitInsnAnnotation(
+    typeRef: Int, // 类型引用
+    typePath: TypePath?, // 类型路径
+    descriptor: String?, // 描述符
+    visible: Boolean // 是否可见
+): AnnotationVisitor?
+```
 
 
 
 #### visitTryCatchBlock
 
+> 访问try catch代码块
 
-
-
+```kotlin
+override fun visitTryCatchBlock(
+    start: Label?, // 开始位置
+    end: Label?,  // 结束位置
+    handler: Label?, // handler位置
+    type: String? // catch类型
+) 
+```
 
 
 
 #### visitTryCatchAnnotation
 
+> 访问handler对应exception类型的annotation
 
+> 如下
 
+```java
+public class VisitTryCatchAnnotationTest {
 
+    public static void a() {
+        try {
+            int a = 1/0;
+        } catch (@AnnotationTest Exception e) {
+
+        }
+    }
+
+}
+```
+
+```kotlin
+override fun visitTryCatchAnnotation(
+    typeRef: Int, // type引用
+    typePath: TypePath?, // type路径
+    descriptor: String?, // annotation描述符
+    visible: Boolean // 是否可见
+): AnnotationVisitor?
+```
 
 
 
 #### visitLocalVariable
 
+> 访问局部变量
 
+```kotlin
+override fun visitLocalVariable(
+    name: String?, // 变量名
+    descriptor: String?, // 变量描述符
+    signature: String?, // 变量签名,泛型签名
+    start: Label?, // 开始位置
+    end: Label?, // 结束位置
+    index: Int // 局部变量表索引
+) 
+```
 
 
 
 #### visitLocalVariableAnnotation
 
+> 访问局部变量的注解
 
+```java
+public class VisitLocalVariableAnnotationTest {
+
+    public void a() {
+        @AnnotationTest
+        int a  = 0;
+    }
+
+}
+```
+
+```kotlin
+override fun visitLocalVariableAnnotation(
+    typeRef: Int,
+    typePath: TypePath?,
+    start: Array<out Label>?,
+    end: Array<out Label>?,
+    index: IntArray?,
+    descriptor: String?,
+    visible: Boolean
+): AnnotationVisitor?
+```
 
 
 
 #### visitLineNumber
 
+> 访问代码行数
 
-
-
+```kotlin
+override fun visitLineNumber(
+    line: Int, // 源代码行数 
+    start: Label? // 开始label
+)
+```
 
 #### visitMaxs
 
+> 访问栈的最大内存&本地变量表的最大容量
 
-
-
+```kotlin
+override fun visitMaxs(
+    maxStack: Int,  // 最大栈大小
+    maxLocals: Int // 最大本地变量表内容
+)
+```
 
 #### visitEnd
 
-
+> 方法访问结束
 
 
 
