@@ -41,7 +41,7 @@ copy:
 #   icon: link || the description
 social:
   # fab fa-github: https://github.com/xxxxx || Github
-  fas fa-envelope: mailto:2623036785@qq.com || Email
+  fas fa-envelope: mailto:tu_zhi_qiang@qq.com || Email
 
 # search (搜索)
 # see https://butterfly.js.org/posts/ceeb73f/#搜索系統
@@ -92,7 +92,7 @@ avatar:
 disable_top_img: false
 
 # The banner image of home page
-index_img:
+index_img: https://source.unsplash.com/random
 
 # If the banner of page not setting, it will show the top_img
 default_top_img:
