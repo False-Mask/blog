@@ -129,6 +129,14 @@ cover:
   # When cover is not set, the default cover is displayed (當沒有設置cover時，默認的封面顯示)
   default_cover:
     # - https://i.loli.net/2020/05/01/gkihqEjXxJ5UZ1C.jpg
+    - https://img.picgo.net/2023/09/22/sandefa469ffb96302d1.jpeg
+    - https://img.picgo.net/2023/09/22/stare8564fa245952efd.jpeg
+    - https://img.picgo.net/2023/09/22/un506150742e9b5909.jpeg
+    - https://img.picgo.net/2023/09/22/you_and_me7314ee015094a629.jpeg
+    - https://img.picgo.net/2023/09/22/green5de4f070c3150dac.jpeg
+    - https://img.picgo.net/2023/09/22/moone8f8ac52bda85f43.jpeg
+    - https://img.picgo.net/2023/09/22/moun32b8d906fdafccee.jpeg
+    - https://img.picgo.net/2023/09/22/mount_255caad2f9172932b.jpeg
 
 # Replace Broken Images (替換無法顯示的圖片)
 error_img:
