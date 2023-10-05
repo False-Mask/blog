@@ -1,5 +1,6 @@
 ---
 title: 数据库多表查询
+cover: https://typora-blog-picture.oss-cn-chengdu.aliyuncs.com/blog/20231005100514.png
 tags:
   - sql
   - 数据库
