@@ -1,8 +1,8 @@
 ---
 title: bhook
 tags:
-  - hook
-  - c/c++
+- hook
+- c/c++
 cover: 
 https://github.com/bytedance/bhook/raw/main/doc/img/unhook_without_trampoline.png
 date: 2023-12-28 10:19:38

@@ -1,10 +1,13 @@
 ---
 title: glibc
 tags:
-- glibc
-- linux
-cover:
+  - glibc
+  - linux
+cover: >-
+  https://upload.wikimedia.org/wikipedia/commons/thumb/2/22/Heckert_GNU_white.svg/235px-Heckert_GNU_white.svg.png
+date: 2023-12-28 17:07:46
 ---
+
 
 
 
@@ -111,6 +114,19 @@ cd build
 
 ```shell
 make
+```
+
+
+
+> 查看一下
+
+```cpp
+➜  build ll | grep "libc\..*"
+-rwxr-xr-x  1 fool fool 4.6K Dec 28 14:07 debugglibc.sh
+-rw-r--r--  1 fool fool  33M Dec 28 14:07 libc.a
+-rw-r--r--  1 fool fool  55K Dec 28 14:03 libc.map
+-rwxr-xr-x  1 fool fool  15M Dec 28 14:07 libc.so
+lrwxrwxrwx  1 fool fool    7 Dec 28 14:07 libc.so.6 -> libc.so
 ```
 
 
