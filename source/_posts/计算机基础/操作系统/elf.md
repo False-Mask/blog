@@ -4,7 +4,7 @@ tags:
   - 操作系统
   - linux
 cover: >-
-  https://p3-juejin.byteimg.com/tos-cn-i-k3u1fbpfcp/987550a25a5b41f1a4fc5ad1487a4ed6~tplv-k3u1fbpfcp-zoom-in-crop-mark:1512:0:0:0.awebp
+  https://typora-blog-picture.oss-cn-chengdu.aliyuncs.com/blog/1704117958437.png
 date: 2024-01-01 21:34:23
 ---
 
@@ -17,7 +17,9 @@ date: 2024-01-01 21:34:23
 
 全称为（Executable and Linkable Format）
 
-![](https://p3-juejin.byteimg.com/tos-cn-i-k3u1fbpfcp/987550a25a5b41f1a4fc5ad1487a4ed6~tplv-k3u1fbpfcp-zoom-in-crop-mark:1512:0:0:0.awebp)
+![1704117958437](https://typora-blog-picture.oss-cn-chengdu.aliyuncs.com/blog/1704117958437.png)
+
+
 
 
 
