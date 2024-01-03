@@ -3,7 +3,7 @@ title: WSL Mirrored NetworkMode
 tags:
   - wsl
 cover: >-
-  https://upload.wikimedia.org/wikipedia/commons/thumb/3/35/Tux.svg/150px-Tux.svg.png
+  https://typora-blog-picture.oss-cn-chengdu.aliyuncs.com/blog/Square44x44Logo.altform-lightunplated_targetsize-256.png
 date: 2023-12-28 14:22:56
 ---
 

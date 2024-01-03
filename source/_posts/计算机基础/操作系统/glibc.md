@@ -4,11 +4,9 @@ tags:
   - glibc
   - linux
 cover: >-
-  https://upload.wikimedia.org/wikipedia/commons/thumb/2/22/Heckert_GNU_white.svg/235px-Heckert_GNU_white.svg.png
+  https://typora-blog-picture.oss-cn-chengdu.aliyuncs.com/blog/gnu.png
 date: 2023-12-28 17:07:46
 ---
-
-
 
 
 # 认识Glibc
