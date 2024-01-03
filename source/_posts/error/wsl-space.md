@@ -2,7 +2,7 @@
 title: 记一次WSL扩容问题
 date: 2023-03-19 14:24:23
 tags:
-- errors
+- error
 - wsl
 categories:
 - error

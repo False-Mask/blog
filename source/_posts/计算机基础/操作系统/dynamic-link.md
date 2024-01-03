@@ -1,5 +1,5 @@
 ---
-title: dynamic-link
+title: 动态链接过程分析
 tags:
   - 操作系统
   - linux

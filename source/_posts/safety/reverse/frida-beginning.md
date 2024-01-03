@@ -1,5 +1,5 @@
 ---
-title: frida-beginning
+title: frida基础配置
 date: 2023-12-09 17:24:29
 tags:
 - 逆向
