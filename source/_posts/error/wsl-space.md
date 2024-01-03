@@ -5,7 +5,7 @@ tags:
 - errors
 - wsl
 categories:
-- errors
+- error
 ---
 
 
