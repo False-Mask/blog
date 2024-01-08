@@ -419,6 +419,31 @@ private fun buildActivityInfo(
 
 #### ViewInfo
 
+> 
+
+```kotlin
+ private fun buildViewInfo(
+        wApplication: WApplication,
+        activity: Activity
+    ) {
+        val decorView = activity.window.decorView
+     	// dump所有的view 
+        val activityView = convertViewToWViewInternal(decorView, null)
+        wApplication.activity.decorViews = mutableListOf(activityView)
+		// 获取所有的dialog
+        val allDialogView = getAllDialogView(activity)
+        if (allDialogView.isNotEmpty()) {
+            for (i in 0 until allDialogView.size) {
+                if (wApplication.activity.decorViews == null) {
+                    wApplication.activity.decorViews = mutableListOf()
+                }
+                // 添加所有dialogViews
+                wApplication.activity.decorViews.add(allDialogView[i])
+            }
+        }
+    }
+```
+
 
 
 
@@ -426,3 +451,45 @@ private fun buildActivityInfo(
 
 
 ### 消息返回
+
+
+
+> 即sendResult
+
+```java
+private void sendResult(Context context, SmartArgs smartArgs, BaseResponse baseResponse) {
+        
+        try {
+            // 转json -> gzip -> base64
+            compressData = Base64.encodeToString(CodeLocatorUtils.compress(GsonUtils.sGson.toJson(baseResponse)));
+            // ......
+            // 包成文件
+            if (saveToFile) {
+                savedFile = FileUtils.getFile(context, TMP_DATA_FILE_NAME);
+                filePath = FileUtils.saveContent(savedFile, compressData);
+                if (filePath != null) {
+                    // broadcast返回结果
+                    setResultData(FILE_PATH + SPLIT + filePath);
+                    if (saveAsync) {
+                        AsyncBroadcastHelper.sendResultForAsyncBroadcast(CodeLocator.getCurrentActivity(), FILE_PATH + SPLIT + filePath);
+                    }
+                } else {
+                    compressData = Base64.encodeToString(CodeLocatorUtils.compress(GsonUtils.sGson.toJson(new ErrorResponse(FILE_NOT_EXIST, savedFile.getAbsolutePath()))));
+                    setResultData(compressData);
+                }
+            } else {
+                // 直接返回数据
+                setResultData(compressData);
+            }
+        } catch (Throwable t) {
+           // ......
+        }
+
+        // ......
+    }
+```
+
+
+
+
+
