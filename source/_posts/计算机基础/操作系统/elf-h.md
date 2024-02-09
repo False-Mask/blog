@@ -3,9 +3,7 @@ title: 使用C/C++解析ELF文件
 tags:
   - c
   - 操作系统
-cover:
-  - >-
-    https://typora-blog-picture.oss-cn-chengdu.aliyuncs.com/blog/ELF_Executable_and_Linkable_Format_diagram_by_Ange_Albertini.png
+cover: https://typora-blog-picture.oss-cn-chengdu.aliyuncs.com/blog/ELF_Executable_and_Linkable_Format_diagram_by_Ange_Albertini.png
 date: 2024-02-09 15:33:25
 ---
 
