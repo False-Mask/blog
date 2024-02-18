@@ -1,8 +1,9 @@
 ---
 title: bhook
 tags:
-  - hook
-  - c/c++
+  - bhook
+  - plt hook
+  - c
 cover:  https://typora-blog-picture.oss-cn-chengdu.aliyuncs.com/blog/unhook_without_trampoline.png
 date: 2023-12-28 10:19:38
 ---
