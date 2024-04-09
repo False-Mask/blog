@@ -5,6 +5,7 @@ tags:
 - gradle
 categories:
 - gradle
+cover: https://typora-blog-picture.oss-cn-chengdu.aliyuncs.com/blog/gradle-dark-green-primary.png
 ---
 
 

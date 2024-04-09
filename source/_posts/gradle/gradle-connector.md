@@ -3,6 +3,7 @@ title: Gradle之C/S通信
 date: 2023-02-21 23:50:50
 tags:
 - gradle
+cover: https://typora-blog-picture.oss-cn-chengdu.aliyuncs.com/blog/gradle-dark-green-primary.png
 categories:
 - gradle 
 ---

@@ -3,6 +3,7 @@ title: Gradle源码环境搭建
 date: 2023-02-08 10:43:31
 tags: 
 - gradle
+cover: https://typora-blog-picture.oss-cn-chengdu.aliyuncs.com/blog/gradle-dark-green-primary.png
 categories:
 - gradle
 ---

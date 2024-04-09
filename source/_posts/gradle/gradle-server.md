@@ -3,6 +3,7 @@ title: Gradle之Daemon启动流程
 date: 2023-03-13 11:16:35
 tags:
 - gradle
+cover: https://typora-blog-picture.oss-cn-chengdu.aliyuncs.com/blog/gradle-dark-green-primary.png
 categories:
 - gradle
 ---

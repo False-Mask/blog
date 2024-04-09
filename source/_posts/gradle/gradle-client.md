@@ -3,6 +3,7 @@ title: Gradle启动之Client
 date: 2023-02-14 15:00:04
 tags:
 - gradle
+cover: https://typora-blog-picture.oss-cn-chengdu.aliyuncs.com/blog/gradle-dark-green-primary.png
 categories:
 - gradle
 ---
@@ -728,11 +729,11 @@ public void execute(ExecutionListener executionListener) {
 >
 >   ```text
 >   #############################################################################
->               
+>                 
 >   	WARNING WARNING WARNING WARNING WARNING WARNING WARNING WARNING WARNING
->               
+>                 
 >   	Debug level logging will leak security sensitive information
->               
+>                 
 >   #############################################################################
 >   ```
 > - `ParseAndBuildAction`
