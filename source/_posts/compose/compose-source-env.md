@@ -19,8 +19,6 @@ date: 2024-05-11 16:41:31
 
 Compose Compiler：1.5.1
 
-![first_app](https://typora-blog-picture.oss-cn-chengdu.aliyuncs.com/blog/first_app.png)
-
 
 
 # 前言
