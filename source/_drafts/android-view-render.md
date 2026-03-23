@@ -1833,233 +1833,6 @@ bool SkiaDisplayList::prepareListAndChildren(
 
 ### draw
 
-
-
-```c++
-void CanvasContext::draw(bool solelyTextureViewUpdates) {
-    // check GrContext是否状态异常
-    // ......
-    
-    SkRect dirty;
-    mDamageAccumulator.finish(&dirty);
-
-    // reset syncDelayDuration each time we draw
-    nsecs_t syncDelayDuration = mSyncDelayDuration;
-    nsecs_t idleDuration = mIdleDuration;
-    mSyncDelayDuration = 0;
-    mIdleDuration = 0;
-
-    const auto skippedFrameReason = [&]() -> std::optional<SkippedFrameReason> {
-        if (!Properties::isDrawingEnabled()) {
-            return SkippedFrameReason::DrawingOff;
-        }
-
-        if (dirty.isEmpty() && Properties::skipEmptyFrames && !surfaceRequiresRedraw()) {
-            return SkippedFrameReason::NothingToDraw;
-        }
-
-        return std::nullopt;
-    }();
-    // 跳过绘制
-    if (skippedFrameReason) {
-        mCurrentFrameInfo->setSkippedFrameReason(*skippedFrameReason);
-
-        if (auto grContext = getGrContext()) {
-            // Submit to ensure that any texture uploads complete and Skia can
-            // free its staging buffers.
-            grContext->flushAndSubmit();
-        }
-
-        // Notify the callbacks, even if there's nothing to draw so they aren't waiting
-        // indefinitely
-        waitOnFences();
-        for (auto& func : mFrameCommitCallbacks) {
-            std::invoke(func, false /* didProduceBuffer */);
-        }
-        mFrameCommitCallbacks.clear();
-        return;
-    }
-
-    ScopedActiveContext activeContext(this);
-    mCurrentFrameInfo->set(FrameInfoIndex::FrameInterval) =
-            mRenderThread.timeLord().frameIntervalNanos();
-
-    mCurrentFrameInfo->markIssueDrawCommandsStart();
-
-    Frame frame = getFrame();
-
-    SkRect windowDirty = computeDirtyRect(frame, &dirty);
-
-    ATRACE_FORMAT("Drawing " RECT_STRING, SK_RECT_ARGS(dirty));
-
-    IRenderPipeline::DrawResult drawResult;
-    {
-        // FrameInfoVisualizer accesses the frame events, which cannot be mutated mid-draw
-        // or it can lead to memory corruption.
-        drawResult = mRenderPipeline->draw(
-                frame, windowDirty, dirty, mLightGeometry, &mLayerUpdateQueue, mContentDrawBounds,
-                mOpaque, mLightInfo, mRenderNodes, &(profiler()), mBufferParams, profilerLock());
-    }
-
-    uint64_t frameCompleteNr = getFrameNumber();
-
-    waitOnFences();
-
-    if (mNativeSurface) {
-        // TODO(b/165985262): measure performance impact
-        const auto vsyncId = mCurrentFrameInfo->get(FrameInfoIndex::FrameTimelineVsyncId);
-        if (vsyncId != UiFrameInfoBuilder::INVALID_VSYNC_ID) {
-            const auto inputEventId =
-                    static_cast<int32_t>(mCurrentFrameInfo->get(FrameInfoIndex::InputEventId));
-            const ANativeWindowFrameTimelineInfo ftl = {
-                    .frameNumber = frameCompleteNr,
-                    .frameTimelineVsyncId = vsyncId,
-                    .inputEventId = inputEventId,
-                    .startTimeNanos = mCurrentFrameInfo->get(FrameInfoIndex::FrameStartTime),
-                    .useForRefreshRateSelection = solelyTextureViewUpdates,
-                    .skippedFrameVsyncId = mSkippedFrameInfo ? mSkippedFrameInfo->vsyncId
-                                                             : UiFrameInfoBuilder::INVALID_VSYNC_ID,
-                    .skippedFrameStartTimeNanos =
-                            mSkippedFrameInfo ? mSkippedFrameInfo->startTime : 0,
-            };
-            native_window_set_frame_timeline_info(mNativeSurface->getNativeWindow(), ftl);
-        }
-    }
-
-    bool requireSwap = false;
-    bool didDraw = false;
-
-    int error = OK;
-    bool didSwap = mRenderPipeline->swapBuffers(frame, drawResult, windowDirty, mCurrentFrameInfo,
-                                                &requireSwap);
-
-    mCurrentFrameInfo->set(FrameInfoIndex::CommandSubmissionCompleted) = std::max(
-            drawResult.commandSubmissionTime, mCurrentFrameInfo->get(FrameInfoIndex::SwapBuffers));
-
-    mIsDirty = false;
-
-    if (requireSwap) {
-        didDraw = true;
-        // Handle any swapchain errors
-        error = mNativeSurface->getAndClearError();
-        if (error == TIMED_OUT) {
-            // Try again
-            mRenderThread.postFrameCallback(this);
-            // But since this frame didn't happen, we need to mark full damage in the swap
-            // history
-            didDraw = false;
-
-        } else if (error != OK || !didSwap) {
-            // Unknown error, abandon the surface
-            setSurface(nullptr);
-            didDraw = false;
-        }
-
-        SwapHistory& swap = mSwapHistory.next();
-        if (didDraw) {
-            swap.damage = windowDirty;
-        } else {
-            float max = static_cast<float>(INT_MAX);
-            swap.damage = SkRect::MakeWH(max, max);
-        }
-        swap.swapCompletedTime = systemTime(SYSTEM_TIME_MONOTONIC);
-        swap.vsyncTime = mRenderThread.timeLord().latestVsync();
-        if (didDraw) {
-            nsecs_t dequeueStart =
-                    ANativeWindow_getLastDequeueStartTime(mNativeSurface->getNativeWindow());
-            if (dequeueStart < mCurrentFrameInfo->get(FrameInfoIndex::SyncStart)) {
-                // Ignoring dequeue duration as it happened prior to frame render start
-                // and thus is not part of the frame.
-                swap.dequeueDuration = 0;
-            } else {
-                swap.dequeueDuration =
-                        ANativeWindow_getLastDequeueDuration(mNativeSurface->getNativeWindow());
-            }
-            swap.queueDuration =
-                    ANativeWindow_getLastQueueDuration(mNativeSurface->getNativeWindow());
-        } else {
-            swap.dequeueDuration = 0;
-            swap.queueDuration = 0;
-        }
-        mCurrentFrameInfo->set(FrameInfoIndex::DequeueBufferDuration) = swap.dequeueDuration;
-        mCurrentFrameInfo->set(FrameInfoIndex::QueueBufferDuration) = swap.queueDuration;
-        mHaveNewSurface = false;
-        mFrameNumber = 0;
-    } else {
-        mCurrentFrameInfo->set(FrameInfoIndex::DequeueBufferDuration) = 0;
-        mCurrentFrameInfo->set(FrameInfoIndex::QueueBufferDuration) = 0;
-    }
-
-    mCurrentFrameInfo->markSwapBuffersCompleted();
-
-#if LOG_FRAMETIME_MMA
-    float thisFrame = mCurrentFrameInfo->duration(FrameInfoIndex::IssueDrawCommandsStart,
-                                                  FrameInfoIndex::FrameCompleted) /
-                      NANOS_PER_MILLIS_F;
-    if (sFrameCount) {
-        sBenchMma = ((9 * sBenchMma) + thisFrame) / 10;
-    } else {
-        sBenchMma = thisFrame;
-    }
-    if (++sFrameCount == 10) {
-        sFrameCount = 1;
-        ALOGD("Average frame time: %.4f", sBenchMma);
-    }
-#endif
-
-    if (didSwap) {
-        for (auto& func : mFrameCommitCallbacks) {
-            std::invoke(func, true /* didProduceBuffer */);
-        }
-        mFrameCommitCallbacks.clear();
-    }
-
-    if (requireSwap) {
-        if (mExpectSurfaceStats) {
-            reportMetricsWithPresentTime();
-            {  // acquire lock
-                std::lock_guard lock(mLast4FrameMetricsInfosMutex);
-                FrameMetricsInfo& next = mLast4FrameMetricsInfos.next();
-                next.frameInfo = mCurrentFrameInfo;
-                next.frameNumber = frameCompleteNr;
-                next.surfaceId = mSurfaceControlGenerationId;
-            }  // release lock
-        } else {
-            mCurrentFrameInfo->markFrameCompleted();
-            mCurrentFrameInfo->set(FrameInfoIndex::GpuCompleted)
-                    = mCurrentFrameInfo->get(FrameInfoIndex::FrameCompleted);
-            std::scoped_lock lock(mFrameInfoMutex);
-            mJankTracker.finishFrame(*mCurrentFrameInfo, mFrameMetricsReporter, frameCompleteNr,
-                                     mSurfaceControlGenerationId);
-        }
-    }
-
-    int64_t intendedVsync = mCurrentFrameInfo->get(FrameInfoIndex::IntendedVsync);
-    int64_t frameDeadline = mCurrentFrameInfo->get(FrameInfoIndex::FrameDeadline);
-    int64_t dequeueBufferDuration = mCurrentFrameInfo->get(FrameInfoIndex::DequeueBufferDuration);
-
-    mHintSessionWrapper->updateTargetWorkDuration(frameDeadline - intendedVsync);
-
-    if (didDraw) {
-        int64_t frameStartTime = mCurrentFrameInfo->get(FrameInfoIndex::FrameStartTime);
-        int64_t frameDuration = systemTime(SYSTEM_TIME_MONOTONIC) - frameStartTime;
-        int64_t actualDuration = frameDuration -
-                                 (std::min(syncDelayDuration, mLastDequeueBufferDuration)) -
-                                 dequeueBufferDuration - idleDuration;
-        mHintSessionWrapper->reportActualWorkDuration(actualDuration);
-    }
-
-    mLastDequeueBufferDuration = dequeueBufferDuration;
-
-    mRenderThread.cacheManager().onFrameCompleted();
-    return;
-}
-```
-
-
-
-
-
 #### issueDrawCommand
 
 ``` c++
@@ -2286,11 +2059,416 @@ bool EglManager::swapBuffers(const Frame& frame, const SkRect& screenDirty) {
 
 
 
+# RenderThread 
+
+
+DrawFrameTask执行的是主线程提交的任务。
+执行逻辑如下：
+1.syncFrameState同步状态
+2.调用CanvasContext::draw执行绘制行为，进行帧渲染绘制操作
+3.unlock主线程，让主线程继续处理帧操作。
+```c++
+void DrawFrameTask::run() {
+    const int64_t vsyncId = mFrameInfo[static_cast<int>(FrameInfoIndex::FrameTimelineVsyncId)];
+    ATRACE_FORMAT("DrawFrames %" PRId64, vsyncId);
+
+    mContext->setSyncDelayDuration(systemTime(SYSTEM_TIME_MONOTONIC) - mSyncQueued);
+    mContext->setTargetSdrHdrRatio(mRenderSdrHdrRatio);
+
+    auto hardwareBufferParams = mHardwareBufferParams;
+    mContext->setHardwareBufferRenderParams(hardwareBufferParams);
+    IRenderPipeline* pipeline = mContext->getRenderPipeline();
+    bool canUnblockUiThread;
+    bool canDrawThisFrame;
+    bool solelyTextureViewUpdates;
+    {
+        TreeInfo info(TreeInfo::MODE_FULL, *mContext);
+        info.forceDrawFrame = mForceDrawFrame;
+        mForceDrawFrame = false;
+        // 1. 同步状态信息
+        canUnblockUiThread = syncFrameState(info);
+        canDrawThisFrame = !info.out.skippedFrameReason.has_value();
+        solelyTextureViewUpdates = info.out.solelyTextureViewUpdates;
+
+        if (mFrameCommitCallback) {
+            mContext->addFrameCommitListener(std::move(mFrameCommitCallback));
+            mFrameCommitCallback = nullptr;
+        }
+    }
+
+    // Grab a copy of everything we need
+    CanvasContext* context = mContext;
+    std::function<std::function<void(bool)>(int32_t, int64_t)> frameCallback =
+            std::move(mFrameCallback);
+    std::function<void()> frameCompleteCallback = std::move(mFrameCompleteCallback);
+    mFrameCallback = nullptr;
+    mFrameCompleteCallback = nullptr;
+
+    // From this point on anything in "this" is *UNSAFE TO ACCESS*
+    if (canUnblockUiThread) {
+        unblockUiThread();
+    }
+
+    // Even if we aren't drawing this vsync pulse the next frame number will still be accurate
+    if (CC_UNLIKELY(frameCallback)) {
+        context->enqueueFrameWork([frameCallback, context, syncResult = mSyncResult,
+                                   frameNr = context->getFrameNumber()]() {
+            auto frameCommitCallback = frameCallback(syncResult, frameNr);
+            if (frameCommitCallback) {
+                context->addFrameCommitListener(std::move(frameCommitCallback));
+            }
+        });
+    }
+
+    // 2. 绘制
+    if (CC_LIKELY(canDrawThisFrame)) {
+        context->draw(solelyTextureViewUpdates);
+    } else {
+        // Do a flush in case syncFrameState performed any texture uploads. Since we skipped
+        // the draw() call, those uploads (or deletes) will end up sitting in the queue.
+        // Do them now
+        if (GrDirectContext* grContext = mRenderThread->getGrContext()) {
+            grContext->flushAndSubmit();
+        }
+        // wait on fences so tasks don't overlap next frame
+        context->waitOnFences();
+    }
+
+    if (CC_UNLIKELY(frameCompleteCallback)) {
+        std::invoke(frameCompleteCallback);
+    }
+	
+    // 3. unblock主线程
+    if (!canUnblockUiThread) {
+        unblockUiThread();
+    }
+
+    if (pipeline->hasHardwareBuffer()) {
+        auto fence = pipeline->flush();
+        hardwareBufferParams.invokeRenderCallback(std::move(fence), 0);
+    }
+}
+```
+
+## syncFrameState
+
+
+
+### pushStagingPropertiesChanges
+
+> 用于同步RenderNode的property
+
+1.同步PositionListener
+
+2.同步dirty properties
+
+```c++
+void RenderNode::pushStagingPropertiesChanges(TreeInfo& info) {
+    // 1. 赋值PositionListener
+    if (mPositionListenerDirty) {
+        mPositionListener = std::move(mStagingPositionListener);
+        mStagingPositionListener = nullptr;
+        mPositionListenerDirty = false;
+    }
+
+    // Push the animators first so that setupStartValueIfNecessary() is called
+    // before properties() is trampled by stagingProperties(), as they are
+    // required by some animators.
+    if (CC_LIKELY(info.runAnimations)) {
+        mAnimatorManager.pushStaging();
+    }
+    
+    if (mDirtyPropertyFields) { // renderNode Property变化的列表, 是一个二进制表示的掩码。
+        mDirtyPropertyFields = 0;
+        damageSelf(info);
+        info.damageAccumulator->popTransform();
+        // 同步property信息
+        // 其实本质上就是改引用
+        syncProperties();
+
+        auto& layerProperties = mProperties.layerProperties();
+        const StretchEffect& stagingStretch = layerProperties.getStretchEffect();
+        if (stagingStretch.isEmpty()) {
+            mStretchMask.clear();
+        }
+
+        if (layerProperties.getImageFilter() == nullptr) {
+            mSnapshotResult.snapshot = nullptr;
+            mTargetImageFilter = nullptr;
+        }
+
+        // We could try to be clever and only re-damage if the matrix changed.
+        // However, we don't need to worry about that. The cost of over-damaging
+        // here is only going to be a single additional map rect of this node
+        // plus a rect join(). The parent's transform (and up) will only be
+        // performed once.
+        info.damageAccumulator->pushTransform(this);
+        damageSelf(info);
+    }
+}
+```
+
+
+
+### pushStagingDisplayListChanges
+
+
+
+> 同步displayList
+
+``` c++
+void RenderNode::pushStagingDisplayListChanges(TreeObserver& observer, TreeInfo& info) {
+    if (mNeedsDisplayListSync) {
+        mNeedsDisplayListSync = false;
+        // Damage with the old display list first then the new one to catch any
+        // changes in isRenderable or, in the future, bounds
+        damageSelf(info);
+        syncDisplayList(observer, &info);
+        damageSelf(info);
+    }
+}
+```
+
+
+
+```c++
+void RenderNode::syncDisplayList(TreeObserver& observer, TreeInfo* info) {
+    // Make sure we inc first so that we don't fluctuate between 0 and 1,
+    // which would thrash the layer cache
+    // 新增子节点引用， 防止内存被释放
+    if (mStagingDisplayList) {
+        mStagingDisplayList.updateChildren([](RenderNode* child) { child->incParentRefCount(); });
+    }
+    // 删除旧的显示列表时减少引用
+    deleteDisplayList(observer, info);
+    // 同步displayList(核心)
+    mDisplayList = std::move(mStagingDisplayList);
+    if (mDisplayList) {
+        WebViewSyncData syncData{.applyForceDark = shouldEnableForceDark(info)};
+        // 同步显示内容
+        mDisplayList.syncContents(syncData);
+        handleForceDark(info);
+    }
+}
+
+```
 
 
 
 
-#### 
+
+
+
+### DisplayList.prepareListAndChildren 
+
+
+
+> 主要递归进行脏区计算
+
+```c++
+// RenderNode.cpp
+// 1. rootRender调用child
+void RenderNode::prepareTreeImpl(TreeObserver& observer, TreeInfo& info, bool functorsNeedLayer) {
+ 
+    
+    if (mDisplayList) {
+        // 收集必要的参数
+        info.out.hasFunctors |= mDisplayList.hasFunctor();
+        mHasHolePunches = mDisplayList.hasHolePunches();
+        // 递归进行脏区计算
+        bool isDirty = mDisplayList.prepareListAndChildren(
+                observer, info, childFunctorsNeedLayer,
+                [this](RenderNode* child, TreeObserver& observer, TreeInfo& info,
+                       bool functorsNeedLayer) {
+                    child->prepareTreeImpl(observer, info, functorsNeedLayer);
+                    mHasHolePunches |= child->hasHolePunches();
+                });
+        if (isDirty) {
+            damageSelf(info);
+        }
+    } else {
+        mHasHolePunches = false;
+    }
+    
+    
+}
+
+
+// DisplayList.h
+// 2. renderNode遍历chil节点
+bool prepareListAndChildren(
+        TreeObserver& observer, TreeInfo& info, bool functorsNeedLayer,
+        std::function<void(RenderNode*, TreeObserver&, TreeInfo&, bool)> childFn) {
+    return mImpl && mImpl->prepareListAndChildren(
+            observer, info, functorsNeedLayer, std::move(childFn));
+}
+
+// SkiaDisplayList.cpp
+// 3. 遍历child节点
+bool SkiaDisplayList::prepareListAndChildren(
+        TreeObserver& observer, TreeInfo& info, bool functorsNeedLayer,
+        std::function<void(RenderNode*, TreeObserver&, TreeInfo&, bool)> childFn) {
+    // If the prepare tree is triggered by the UI thread and no previous call to
+    // pinImages has failed then we must pin all mutable images in the GPU cache
+    // until the next UI thread draw.
+    // 处理部分android特有的逻辑
+#ifdef __ANDROID__ // Layoutlib does not support CanvasContext
+    if (info.prepareTextures && !info.canvasContext.pinImages(mMutableImages)) {
+        // In the event that pinning failed we prevent future pinImage calls for the
+        // remainder of this tree traversal and also unpin any currently pinned images
+        // to free up GPU resources.
+        info.prepareTextures = false;
+        info.canvasContext.unpinImages();
+    }
+
+    auto grContext = info.canvasContext.getGrContext();
+    for (auto mesh : mMeshes) {
+        mesh->updateSkMesh(grContext);
+    }
+
+#endif
+
+    bool hasBackwardProjectedNodesHere = false;
+    bool hasBackwardProjectedNodesSubtree = false;
+	
+    // 逐一遍历所有的child节点
+    for (auto& child : mChildNodes) {
+        RenderNode* childNode = child.getRenderNode();
+        Matrix4 mat4(child.getRecordedMatrix());
+        info.damageAccumulator->pushTransform(&mat4);
+        info.hasBackwardProjectedNodes = false;
+        // 调用传入的function
+        // 可以回过头看#1.rootRender调用child
+        // childFuc内部调用了child->prepareTreeImpl
+        childFn(childNode, observer, info, functorsNeedLayer);
+        hasBackwardProjectedNodesHere |= child.getNodeProperties().getProjectBackwards();
+        hasBackwardProjectedNodesSubtree |= info.hasBackwardProjectedNodes;
+        info.damageAccumulator->popTransform();
+    }
+
+    // The purpose of next block of code is to reset projected display list if there are no
+    // backward projected nodes. This speeds up drawing, by avoiding an extra walk of the tree
+    if (mProjectionReceiver) {
+        mProjectionReceiver->setProjectedDisplayList(hasBackwardProjectedNodesSubtree ? this
+                                                                                      : nullptr);
+        info.hasBackwardProjectedNodes = hasBackwardProjectedNodesHere;
+    } else {
+        info.hasBackwardProjectedNodes =
+                hasBackwardProjectedNodesSubtree || hasBackwardProjectedNodesHere;
+    }
+
+    bool isDirty = false;
+    for (auto& animatedImage : mAnimatedImages) {
+        nsecs_t timeTilNextFrame = TreeInfo::Out::kNoAnimatedImageDelay;
+        // If any animated image in the display list needs updated, then damage the node.
+        if (animatedImage->isDirty(&timeTilNextFrame)) {
+            isDirty = true;
+        }
+
+        if (animatedImage->isRunning() &&
+            timeTilNextFrame != TreeInfo::Out::kNoAnimatedImageDelay) {
+            auto& delay = info.out.animatedImageDelay;
+            if (delay == TreeInfo::Out::kNoAnimatedImageDelay || timeTilNextFrame < delay) {
+                delay = timeTilNextFrame;
+            }
+        }
+    }
+
+    for (auto& [vectorDrawable, cachedMatrix] : mVectorDrawables) {
+        // If any vector drawable in the display list needs update, damage the node.
+        if (vectorDrawable->isDirty()) {
+            Matrix4 totalMatrix;
+            info.damageAccumulator->computeCurrentTransform(&totalMatrix);
+            Matrix4 canvasMatrix(cachedMatrix);
+            totalMatrix.multiply(canvasMatrix);
+            const SkRect& bounds = vectorDrawable->properties().getBounds();
+            if (intersects(info.screenSize, totalMatrix, bounds)) {
+                isDirty = true;
+                vectorDrawable->setPropertyChangeWillBeConsumed(true);
+            }
+        }
+    }
+    return isDirty;
+}
+```
+
+
+
+
+## draw
+
+
+```c++
+void CanvasContext::draw(bool solelyTextureViewUpdates) {
+    // ......
+
+    mCurrentFrameInfo->markIssueDrawCommandsStart();
+	// 1. 获取缓存Buffer
+    Frame frame = getFrame();
+
+    SkRect windowDirty = computeDirtyRect(frame, &dirty);
+
+    ATRACE_FORMAT("Drawing " RECT_STRING, SK_RECT_ARGS(dirty));
+
+    IRenderPipeline::DrawResult drawResult;
+    // 2. 执行绘制操作
+    {
+        // FrameInfoVisualizer accesses the frame events, which cannot be mutated mid-draw
+        // or it can lead to memory corruption.
+        drawResult = mRenderPipeline->draw(
+                frame, windowDirty, dirty, mLightGeometry, &mLayerUpdateQueue, mContentDrawBounds,
+                mOpaque, mLightInfo, mRenderNodes, &(profiler()), mBufferParams, profilerLock());
+    }
+
+    uint64_t frameCompleteNr = getFrameNumber();
+	// 等待屏障
+    waitOnFences();
+	
+	// ......
+
+    bool requireSwap = false;
+    bool didDraw = false;
+
+    int error = OK;
+    // 3. swapBuffers(将buffer入队到BufferQueue,发送到SurfaceFlinger中)
+    bool didSwap = mRenderPipeline->swapBuffers(frame, drawResult, windowDirty, mCurrentFrameInfo,
+                                                &requireSwap);
+
+    mCurrentFrameInfo->set(FrameInfoIndex::CommandSubmissionCompleted) = std::max(
+            drawResult.commandSubmissionTime, mCurrentFrameInfo->get(FrameInfoIndex::SwapBuffers));
+
+    mIsDirty = false;
+
+    // ......
+}
+```
+
+
+### 获取frame
+
+从BufferQueue中获取Buffer用于后续渲染流程写入帧数据
+
+### SkiaPipeline::renderFrame
+
+遍历所有的DisplayListData,将DrawOps转为OpenGL/Vulkan等GPU指令入队GrOps列表中
+
+### SkSurface::flushAndSubmit
+
+提交执行GrOps/GPU指令，并将数据入队到Sksurface中(BufferQueue)
+
+
+### 等待屏障
+
+等待GPU fence不确定是什么东西
+
+### swapBuffers
+
+进行数据提交，通过BufferQueue::queueBuffer将Buffer提交到SurfaceFlinger中
+
+
+
+
+# 其他
 
 
 

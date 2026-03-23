@@ -33,6 +33,10 @@ cover:
         
     - 硬件加速（默认）：将View录制成`RenderNode`（显示列表），由`RenderThread`（独立于UI线程）合成，通过`eglSwapBuffers()`提交到`SurfaceFlinger`。
 
+
+- RenderThread
+
+
 # WMS
 
 **核心角色**：`WindowManagerService`（系统服务）、`Window`（窗口抽象）、`Layer`（SurfaceFlinger层）。

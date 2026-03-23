@@ -415,15 +415,185 @@ adb reboot
 ```
 
 
+## Linux Kernel 阅读环境
 
+> 更新时间：2026/3/17
 
+- 生成compile_commands.json
+refs：
+https://www.cnblogs.com/salty-pineapple/p/18538262
 
+Android13-5.10中已经有生成compile_commands.json的脚本
+```shell
+prebuilts/clang/host/linux-x86/clang-r450784e/python3/bin/python3 aosp/scripts/clang-tools/gen_compile_commands.py
+```
 
+- 配置vscode 文件
+
+```json
+{
+    "folders": [
+        {
+            "name": "android13_5.10",
+            "path": "/mnt/data/code/android-kernel"
+        }
+    ],
+    "settings": {
+           // 开启粘贴保存自动格式化
+        "editor.formatOnPaste": true,
+        "editor.formatOnType": true,
+        "C_Cpp.errorSquiggles": "Disabled",
+        "C_Cpp.intelliSenseEngineFallback": "Disabled",
+        "C_Cpp.intelliSenseEngine": "Disabled",
+        "clangd.path": "/mnt/data/code/android-kernel/prebuilts/clang/host/linux-x86/clang-r450784e/bin/clangd",
+        // Clangd 运行参数(在终端/命令行输入 clangd --help-list-hidden 可查看更多)
+        "clangd.arguments": [
+            // compile_commands.json 生成文件夹
+            "--compile-commands-dir=${workspaceFolder}",
+            // 让 Clangd 生成更详细的日志
+            "--log=verbose",
+            // 输出的 JSON 文件更美观
+            "--pretty",
+            // 全局补全(输入时弹出的建议将会提供 CMakeLists.txt 里配置的所有文件中可能的符号，会自动补充头文件)
+            "--all-scopes-completion",
+            // 建议风格：打包(重载函数只会给出一个建议）
+            // 相反可以设置为detailed
+            "--completion-style=bundled",
+            // 跨文件重命名变量
+            "--cross-file-rename",
+            // 允许补充头文件
+            "--header-insertion=iwyu",
+            // 输入建议中，已包含头文件的项与还未包含头文件的项会以圆点加以区分
+            "--header-insertion-decorators",
+            // 在后台自动分析文件(基于 complie_commands，我们用CMake生成)
+            "--background-index",
+            // 启用 Clang-Tidy 以提供「静态检查」
+            "--clang-tidy",
+            // Clang-Tidy 静态检查的参数，指出按照哪些规则进行静态检查，详情见「与按照官方文档配置好的 VSCode 相比拥有的优势」
+            // 参数后部分的*表示通配符
+            // 在参数前加入-，如-modernize-use-trailing-return-type，将会禁用某一规则
+            "--clang-tidy-checks=cppcoreguidelines-*,performance-*,bugprone-*,portability-*,modernize-*,google-*",
+            // 默认格式化风格: 谷歌开源项目代码指南
+            // "--fallback-style=file",
+            // 同时开启的任务数量
+            "-j=32",
+            // pch优化的位置(memory 或 disk，选择memory会增加内存开销，但会提升性能) 推荐在板子上使用disk
+            "--pch-storage=disk",
+            // 启用这项时，补全函数时，将会给参数提供占位符，键入后按 Tab 可以切换到下一占位符，乃至函数末
+            // 我选择禁用
+            "--function-arg-placeholders=false"
+        ],
+        "lldb.displayFormat": "auto",
+        "lldb.showDisassembly": "auto",
+        "lldb.dereferencePointers": true,
+        "lldb.consoleMode": "commands",
+        "go.delveConfig": {
+            "debugAdapter": "dlv-dap",
+            "dlvLoadConfig": {
+                "path": "/home/rose/go/bin/dlv",
+                "followPointers": true,
+                "maxVariableRecurse": 1,
+                "maxStringLen": 64,
+                "maxArrayValues": 64,
+                "maxStructFields": -1
+            }
+        },
+        "go.toolsManagement.go": "/usr/bin/go"
+     },
+    "launch": {
+        "configurations": [
+            {
+                "name": "(lldbclient.py) Attach app_process64 (port: 5039)",
+                "type": "lldb",
+                "request": "attach",
+                "relativePathBase": "/mnt/data/code/android-kernel",
+                "sourceMap": {
+                    "/b/f/w": "/mnt/data/code/android-kernel",
+                    "": "/mnt/data/code/android-kernel",
+                    ".": "/mnt/data/code/android-kernel"
+                },
+                "initCommands": [
+                    "settings append target.exec-search-paths /mnt/data/code/android-kernel/out/target/product/oriole/symbols/system/lib64/ /mnt/data/code/android-kernel/out/target/product/oriole/symbols/system/lib64/hw /mnt/data/code/android-kernel/out/target/product/oriole/symbols/system/lib64/ssl/engines /mnt/data/code/android-kernel/out/target/product/oriole/symbols/system/lib64/drm /mnt/data/code/android-kernel/out/target/product/oriole/symbols/system/lib64/egl /mnt/data/code/android-kernel/out/target/product/oriole/symbols/system/lib64/soundfx /mnt/data/code/android-kernel/out/target/product/oriole/symbols/vendor/lib64/ /mnt/data/code/android-kernel/out/target/product/oriole/symbols/vendor/lib64/hw /mnt/data/code/android-kernel/out/target/product/oriole/symbols/vendor/lib64/egl /mnt/data/code/android-kernel/out/target/product/oriole/symbols/apex/com.android.runtime/bin",
+                    "command source ${workspaceFolder}/.lldbinit"
+                ],
+                "targetCreateCommands": [
+                    "target create /mnt/data/code/android-kernel/out/target/product/oriole/symbols/system/bin/app_process64",
+                    "target modules search-paths add / /mnt/data/code/android-kernel/out/target/product/module_arm64/symbols",
+                    "target modules search-paths add / /mnt/data/code/android-kernel/out/target/product/oriole/symbols/",
+                    // "command source ${workspaceFolder}/targetCreate.lldbinit"
+                ],
+                "processCreateCommands": [
+                    "gdb-remote 5039"
+                ]
+            },
+            {
+                "name": "(lldbclient.py) Attach mediaserver (port: 5039)",
+                "type": "lldb",
+                "request": "attach",
+                "relativePathBase": "/mnt/data/code/android-kernel",
+                "sourceMap": {
+                    "/b/f/w": "/mnt/data/code/android-kernel",
+                    "": "/mnt/data/code/android-kernel",
+                    ".": "/mnt/data/code/android-kernel"
+                },
+                "initCommands": [
+                    "settings append target.exec-search-paths /mnt/data/code/android-kernel/out/target/product/oriole/symbols/system/lib/ /mnt/data/code/android-kernel/out/target/product/oriole/symbols/system/lib/hw /mnt/data/code/android-kernel/out/target/product/oriole/symbols/system/lib/ssl/engines /mnt/data/code/android-kernel/out/target/product/oriole/symbols/system/lib/drm /mnt/data/code/android-kernel/out/target/product/oriole/symbols/system/lib/egl /mnt/data/code/android-kernel/out/target/product/oriole/symbols/system/lib/soundfx /mnt/data/code/android-kernel/out/target/product/oriole/symbols/vendor/lib/ /mnt/data/code/android-kernel/out/target/product/oriole/symbols/vendor/lib/hw /mnt/data/code/android-kernel/out/target/product/oriole/symbols/vendor/lib/egl /mnt/data/code/android-kernel/out/target/product/oriole/symbols/apex/com.android.runtime/bin /mnt/data/code/android-kernel/out/target/product/module_arm64/symbols/",
+                    "command source ${workspaceFolder}/.lldbinit"
+                ],
+                "targetCreateCommands": [
+                    "target create /mnt/data/code/android-kernel/out/target/product/oriole/symbols/system/bin/mediaserver",
+                    "target modules search-paths add / /mnt/data/code/android-kernel/out/target/product/oriole/symbols/"
+                ],
+                "processCreateCommands": [
+                    "gdb-remote 5039"
+                ]
+            },
+            {
+                "name": "(lldbclient.py) Attach surfaceflinger (port: 5039)",
+                "type": "lldb",
+                "request": "attach",
+                "relativePathBase": "/mnt/data/code/android-kernel",
+                "sourceMap": {
+                    "/b/f/w": "/mnt/data/code/android-kernel",
+                    "": "/mnt/data/code/android-kernel",
+                    ".": "/mnt/data/code/android-kernel"
+                },
+                "initCommands": [
+                    "settings append target.exec-search-paths /mnt/data/code/android-kernel/out/target/product/oriole/symbols/system/lib64/ /mnt/data/code/android-kernel/out/target/product/oriole/symbols/system/lib64/hw /mnt/data/code/android-kernel/out/target/product/oriole/symbols/system/lib64/ssl/engines /mnt/data/code/android-kernel/out/target/product/oriole/symbols/system/lib64/drm /mnt/data/code/android-kernel/out/target/product/oriole/symbols/system/lib64/egl /mnt/data/code/android-kernel/out/target/product/oriole/symbols/system/lib64/soundfx /mnt/data/code/android-kernel/out/target/product/oriole/symbols/vendor/lib64/ /mnt/data/code/android-kernel/out/target/product/oriole/symbols/vendor/lib64/hw /mnt/data/code/android-kernel/out/target/product/oriole/symbols/vendor/lib64/egl /mnt/data/code/android-kernel/out/target/product/oriole/symbols/apex/com.android.runtime/bin"
+                ],
+                "targetCreateCommands": [
+                    "target create /mnt/data/code/android-kernel/out/target/product/oriole/symbols/system/bin/surfaceflinger",
+                    "target modules search-paths add / /mnt/data/code/android-kernel/out/target/product/oriole/symbols/"
+                ],
+                "processCreateCommands": [
+                    "gdb-remote 5039"
+                ]
+            },
+            {
+                "debugAdapter": "legacy",
+                "name": "attach soong_ui",
+                "type": "go",
+                "request": "attach",
+                "mode": "remote",
+                "host": "127.0.0.1",
+                "port": 2345,
+                "asRoot": true,
+                "cwd": "${workspaceFolder}",
+                "apiVersion": 2,
+                
+                // "mode": "local",
+                // "processId": 0,
+                // "asRoot": true,
+                // "apiVersion": 2,
+                // "logOutput": "dap"
+            }
+            
+        ],
+    },
+}
+```
 
 # 其他
-
-
-
 
 
 ## repo技巧

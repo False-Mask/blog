@@ -2,3 +2,6 @@ public
 node_modules
 db.json
 **\.DS_Store
+.obsidian/
+
+
